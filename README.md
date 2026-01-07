@@ -1,4 +1,3 @@
-## Features
-Pattern Counting: Calculates the density of specific motifs. 
+## small.py Features
+Pattern Counting ; K-mer Mapping frequency ; Reverse Complement ; Pattern Matching ;
 
-K-mer Mapping: Generates a frequency distribution for genomic windows. (Finding ori, DnaA boxes)
