@@ -34,3 +34,33 @@ Text = "atcaatgattatttcatatttcatattt"
 k = 9
 
 print(FrequentWords(Text, k))
+
+#ReverseComplement
+
+def ReverseComplement(Pattern):
+
+    trans_table = str.maketrans("ATCG", "TAGC")
+    complement = Pattern.upper().translate(trans_table)
+    
+    return complement[::-1]
+
+dna = "AAAACCCGGT"
+print(f"Original: {dna}")
+print(f"RevComp:  {ReverseComplement(dna)}")
+
+#PatternMatching
+
+def PatternMatching(Pattern, Genome):
+    positions = [] 
+    k = len(Pattern)
+  
+    for i in range(len(Genome) - k + 1):
+        if Genome[i:i + k] == Pattern.upper():
+            positions.append(i)
+    return positions
+
+Genome = "CTGCGATGTTTGGTGGTCACGCAA"
+Pattern = "CTTGATCAT"
+
+positions = PatternMatching(Pattern, Genome)
+print(f"Pattern found at indices: {positions}")
