@@ -3,7 +3,7 @@ from config import QC_RULES, Z_SCORE_CUTOFFS
 
 class TrisomyAnalyzer:
     """
-    Class to interpret NIPT Z-scores based on GeneMind logic.
+    Class to interpret NIPT Z-scores.
     """
     
     def __init__(self, sample_data):
