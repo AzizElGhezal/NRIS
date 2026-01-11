@@ -1,5 +1,5 @@
 """
-NIPT Result Interpretation Software
+NIPT Result Interpretation Software by AzizElGhezal
 ---------------------------
 A local Streamlit dashboard for analyzing Non-Invasive Prenatal Testing (NIPT) data.
 Implements strict clinical thresholds for Trisomies 13/18/21, RATs, SCAs, and CNVs.
