@@ -1,9 +1,15 @@
 """
-NIPT Result Interpretation Software (NRIS) v2.0 - Enhanced Edition
+NIPT Result Interpretation Software (NRIS) v2.1 - Enhanced Edition
 By AzizElGhezal
 ---------------------------
-Advanced clinical genetics dashboard with authentication, analytics, 
+Advanced clinical genetics dashboard with authentication, analytics,
 PDF reports, visualizations, and comprehensive audit logging.
+
+Version 2.1 Improvements:
+- Enhanced security (password complexity, account lockout, session timeout)
+- Database integrity (foreign keys, soft delete, transactions)
+- Performance optimizations (indexes, caching, query optimization)
+- Improved PDF import (validation, error handling, confidence scoring)
 """
 
 import sqlite3
@@ -58,11 +64,20 @@ DEFAULT_CONFIG = {
 
 # ==================== DATABASE FUNCTIONS ====================
 
+def get_db_connection():
+    """Get database connection with foreign keys enabled."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
 def init_database() -> None:
     """Enhanced database with audit logging and user management."""
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        
+
+        # Enable foreign key constraints
+        c.execute("PRAGMA foreign_keys = ON")
+
         c.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,7 +86,10 @@ def init_database() -> None:
                 full_name TEXT,
                 role TEXT DEFAULT 'technician',
                 created_at TEXT,
-                last_login TEXT
+                last_login TEXT,
+                must_change_password INTEGER DEFAULT 0,
+                failed_login_attempts INTEGER DEFAULT 0,
+                locked_until TEXT
             )
         ''')
         
@@ -121,7 +139,24 @@ def init_database() -> None:
             c.execute("ALTER TABLE results ADD COLUMN qc_metrics_json TEXT")
         except sqlite3.OperationalError:
             pass  # Column already exists
-        
+
+        # Migration: Add new user security columns if they don't exist
+        for col_sql in [
+            "ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN locked_until TEXT"
+        ]:
+            try:
+                c.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        # Migration: Add is_deleted column to patients for soft delete
+        try:
+            c.execute("ALTER TABLE patients ADD COLUMN is_deleted INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
         c.execute('''
             CREATE TABLE IF NOT EXISTS audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,29 +168,50 @@ def init_database() -> None:
                 FOREIGN KEY(user_id) REFERENCES users(id)
             )
         ''')
-        
+
+        # Create indexes for better query performance
+        index_statements = [
+            "CREATE INDEX IF NOT EXISTS idx_patients_mrn ON patients(mrn_id)",
+            "CREATE INDEX IF NOT EXISTS idx_patients_deleted ON patients(is_deleted)",
+            "CREATE INDEX IF NOT EXISTS idx_results_patient_id ON results(patient_id)",
+            "CREATE INDEX IF NOT EXISTS idx_results_created_at ON results(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_results_qc_status ON results(qc_status)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_log(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)"
+        ]
+        for idx_sql in index_statements:
+            try:
+                c.execute(idx_sql)
+            except sqlite3.OperationalError:
+                pass  # Index might already exist
+
         c.execute("SELECT COUNT(*) FROM users")
         if c.fetchone()[0] == 0:
             admin_hash = hash_password("admin123")
             c.execute("""
-                INSERT INTO users (username, password_hash, full_name, role, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, ("admin", admin_hash, "System Administrator", "admin", datetime.now().isoformat()))
+                INSERT INTO users (username, password_hash, full_name, role, created_at, must_change_password)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, ("admin", admin_hash, "System Administrator", "admin", datetime.now().isoformat(), 1))
 
 def log_audit(action: str, details: str, user_id: Optional[int] = None) -> None:
-    """Log user actions for compliance."""
+    """Log user actions for compliance with better error handling."""
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             c = conn.cursor()
+            # Truncate details to prevent excessively long entries
+            safe_details = str(details)[:1000] if details else ""
             c.execute("""
                 INSERT INTO audit_log (user_id, action, details, timestamp, ip_address)
                 VALUES (?, ?, ?, ?, ?)
-            """, (user_id, action, details, datetime.now().isoformat(), "local"))
-    except:
+            """, (user_id, action, safe_details, datetime.now().isoformat(), "local"))
+            conn.commit()
+    except Exception as e:
+        # Silently fail audit logging to not interrupt main operations
         pass
 
 def hash_password(password: str) -> str:
-    """Hash password with salt."""
+    """Hash password with salt using SHA256."""
     salt = secrets.token_hex(16)
     pwd_hash = hashlib.sha256((password + salt).encode()).hexdigest()
     return f"{salt}${pwd_hash}"
@@ -165,22 +221,86 @@ def verify_password(password: str, hash_str: str) -> bool:
     try:
         salt, pwd_hash = hash_str.split('$')
         return hashlib.sha256((password + salt).encode()).hexdigest() == pwd_hash
-    except:
+    except Exception:
         return False
 
+def validate_password_strength(password: str) -> Tuple[bool, str]:
+    """Validate password meets complexity requirements.
+
+    Returns (is_valid, error_message)
+    """
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long"
+    if not re.search(r'[A-Z]', password):
+        return False, "Password must contain at least one uppercase letter"
+    if not re.search(r'[a-z]', password):
+        return False, "Password must contain at least one lowercase letter"
+    if not re.search(r'\d', password):
+        return False, "Password must contain at least one number"
+    return True, ""
+
+# Security constants
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_DURATION_MINUTES = 15
+
 def authenticate_user(username: str, password: str) -> Optional[Dict]:
-    """Authenticate user and return user data."""
+    """Authenticate user with account lockout protection."""
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             c = conn.cursor()
-            c.execute("SELECT id, username, password_hash, full_name, role FROM users WHERE username = ?", (username,))
+            c.execute("""
+                SELECT id, username, password_hash, full_name, role,
+                       must_change_password, failed_login_attempts, locked_until
+                FROM users WHERE username = ?
+            """, (username,))
             row = c.fetchone()
-            
-            if row and verify_password(password, row[2]):
-                c.execute("UPDATE users SET last_login = ? WHERE id = ?", (datetime.now().isoformat(), row[0]))
-                log_audit("LOGIN", f"User {username} logged in", row[0])
-                return {'id': row[0], 'username': row[1], 'name': row[3], 'role': row[4]}
-    except:
+
+            if not row:
+                log_audit("LOGIN_FAILED", f"Unknown username: {username}", None)
+                return None
+
+            user_id, _, pwd_hash, full_name, role, must_change_pwd, failed_attempts, locked_until = row
+
+            # Check if account is locked
+            if locked_until:
+                lock_time = datetime.fromisoformat(locked_until)
+                if datetime.now() < lock_time:
+                    remaining = (lock_time - datetime.now()).seconds // 60
+                    log_audit("LOGIN_BLOCKED", f"Account locked for user {username}", user_id)
+                    return {'error': f'Account locked. Try again in {remaining + 1} minutes.'}
+                else:
+                    # Lockout expired, reset
+                    c.execute("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?", (user_id,))
+
+            if verify_password(password, pwd_hash):
+                # Successful login - reset failed attempts
+                c.execute("""
+                    UPDATE users SET last_login = ?, failed_login_attempts = 0, locked_until = NULL
+                    WHERE id = ?
+                """, (datetime.now().isoformat(), user_id))
+                conn.commit()
+                log_audit("LOGIN", f"User {username} logged in", user_id)
+                return {
+                    'id': user_id,
+                    'username': username,
+                    'name': full_name,
+                    'role': role,
+                    'must_change_password': bool(must_change_pwd)
+                }
+            else:
+                # Failed login
+                new_attempts = (failed_attempts or 0) + 1
+                if new_attempts >= MAX_LOGIN_ATTEMPTS:
+                    lock_until = (datetime.now() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)).isoformat()
+                    c.execute("""
+                        UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?
+                    """, (new_attempts, lock_until, user_id))
+                    log_audit("ACCOUNT_LOCKED", f"Account locked after {MAX_LOGIN_ATTEMPTS} failed attempts", user_id)
+                else:
+                    c.execute("UPDATE users SET failed_login_attempts = ? WHERE id = ?", (new_attempts, user_id))
+                    log_audit("LOGIN_FAILED", f"Invalid password for {username} (attempt {new_attempts})", user_id)
+                conn.commit()
+    except Exception as e:
         pass
     return None
 
@@ -298,15 +418,15 @@ def analyze_cnv(size: float, ratio: float) -> Tuple[str, float, str]:
     return "Low Risk", threshold, "LOW"
 
 def check_duplicate_patient(mrn: str) -> Tuple[bool, Optional[Dict]]:
-    """Check if a patient with this MRN already exists. Returns (exists, patient_info)."""
+    """Check if a patient with this MRN already exists (excluding deleted). Returns (exists, patient_info)."""
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             c = conn.cursor()
             c.execute("""
                 SELECT p.id, p.full_name, p.mrn_id, p.age, p.weeks, COUNT(r.id) as result_count
                 FROM patients p
                 LEFT JOIN results r ON r.patient_id = p.id
-                WHERE p.mrn_id = ?
+                WHERE p.mrn_id = ? AND (p.is_deleted = 0 OR p.is_deleted IS NULL)
                 GROUP BY p.id
             """, (mrn,))
             row = c.fetchone()
@@ -323,87 +443,188 @@ def check_duplicate_patient(mrn: str) -> Tuple[bool, Optional[Dict]]:
         pass
     return False, None
 
-def save_result(patient: Dict, results: Dict, clinical: Dict, full_z: Optional[Dict] = None,
-                qc_metrics: Optional[Dict] = None, allow_duplicate: bool = True) -> Tuple[int, str]:
-    """Save with audit logging. Returns (result_id, message)."""
+def delete_patient(patient_id: int, hard_delete: bool = False) -> Tuple[bool, str]:
+    """Delete a patient and all associated results.
+
+    Args:
+        patient_id: The database ID of the patient
+        hard_delete: If True, permanently delete. If False, soft delete (mark as deleted).
+
+    Returns:
+        (success, message)
+    """
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             c = conn.cursor()
 
-            c.execute("SELECT id, full_name FROM patients WHERE mrn_id = ?", (patient['id'],))
-            existing = c.fetchone()
+            # Check if patient exists
+            c.execute("SELECT mrn_id, full_name FROM patients WHERE id = ?", (patient_id,))
+            patient = c.fetchone()
+            if not patient:
+                return False, "Patient not found"
 
-            if existing:
-                patient_db_id = existing[0]
-                existing_name = existing[1]
-                if not allow_duplicate:
-                    return 0, f"Patient with ID '{patient['id']}' already exists in registry as '{existing_name}'"
+            mrn, name = patient
+
+            if hard_delete:
+                # First delete all associated results
+                c.execute("DELETE FROM results WHERE patient_id = ?", (patient_id,))
+                deleted_results = c.rowcount
+
+                # Then delete the patient
+                c.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
+
+                conn.commit()
+                log_audit("HARD_DELETE_PATIENT",
+                         f"Permanently deleted patient {mrn} ({name}) and {deleted_results} results",
+                         st.session_state.user['id'] if 'user' in st.session_state else None)
+                return True, f"Permanently deleted patient {mrn} and {deleted_results} associated results"
             else:
-                c.execute("""
-                    INSERT INTO patients
-                    (mrn_id, full_name, age, weight_kg, height_cm, bmi, weeks, clinical_notes, created_at, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    patient['id'], patient['name'], patient['age'], patient['weight'],
-                    patient['height'], patient['bmi'], patient['weeks'], patient['notes'],
-                    datetime.now().isoformat(), st.session_state.user['id']
-                ))
-                patient_db_id = c.lastrowid
+                # Soft delete - mark as deleted
+                c.execute("UPDATE patients SET is_deleted = 1 WHERE id = ?", (patient_id,))
+                conn.commit()
+                log_audit("DELETE_PATIENT",
+                         f"Soft deleted patient {mrn} ({name})",
+                         st.session_state.user['id'] if 'user' in st.session_state else None)
+                return True, f"Patient {mrn} marked as deleted"
 
-            # Prepare QC metrics JSON
-            qc_metrics_json = json.dumps(qc_metrics) if qc_metrics else "{}"
+    except Exception as e:
+        return False, f"Delete failed: {str(e)}"
 
+def restore_patient(patient_id: int) -> Tuple[bool, str]:
+    """Restore a soft-deleted patient."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("UPDATE patients SET is_deleted = 0 WHERE id = ?", (patient_id,))
+            if c.rowcount == 0:
+                return False, "Patient not found"
+            conn.commit()
+            log_audit("RESTORE_PATIENT", f"Restored patient {patient_id}",
+                     st.session_state.user['id'] if 'user' in st.session_state else None)
+            return True, "Patient restored successfully"
+    except Exception as e:
+        return False, f"Restore failed: {str(e)}"
+
+def cleanup_orphaned_patients() -> Tuple[int, str]:
+    """Clean up patients with no associated results (ghost patients)."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            # Find and delete patients with no results
             c.execute("""
-                INSERT INTO results
-                (patient_id, panel_type, qc_status, qc_details, qc_advice, qc_metrics_json,
-                 t21_res, t18_res, t13_res, sca_res,
-                 cnv_json, rat_json, full_z_json, final_summary, created_at, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                DELETE FROM patients
+                WHERE id NOT IN (SELECT DISTINCT patient_id FROM results WHERE patient_id IS NOT NULL)
+                AND (is_deleted = 1 OR is_deleted IS NULL)
+            """)
+            deleted_count = c.rowcount
+            conn.commit()
+
+            if deleted_count > 0:
+                log_audit("CLEANUP_ORPHANS", f"Removed {deleted_count} orphaned patient records",
+                         st.session_state.user['id'] if 'user' in st.session_state else None)
+            return deleted_count, f"Cleaned up {deleted_count} orphaned patient records"
+    except Exception as e:
+        return 0, f"Cleanup failed: {str(e)}"
+
+def save_result(patient: Dict, results: Dict, clinical: Dict, full_z: Optional[Dict] = None,
+                qc_metrics: Optional[Dict] = None, allow_duplicate: bool = True) -> Tuple[int, str]:
+    """Save with audit logging and transaction support. Returns (result_id, message)."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Start transaction
+        c.execute("BEGIN TRANSACTION")
+
+        # Check for existing patient (excluding deleted)
+        c.execute("""
+            SELECT id, full_name FROM patients
+            WHERE mrn_id = ? AND (is_deleted = 0 OR is_deleted IS NULL)
+        """, (patient['id'],))
+        existing = c.fetchone()
+
+        if existing:
+            patient_db_id = existing[0]
+            existing_name = existing[1]
+            if not allow_duplicate:
+                conn.rollback()
+                return 0, f"Patient with ID '{patient['id']}' already exists in registry as '{existing_name}'"
+        else:
+            c.execute("""
+                INSERT INTO patients
+                (mrn_id, full_name, age, weight_kg, height_cm, bmi, weeks, clinical_notes, created_at, created_by, is_deleted)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """, (
-                patient_db_id, results['panel'], results['qc_status'],
-                str(results['qc_msgs']), results['qc_advice'], qc_metrics_json,
-                clinical['t21'], clinical['t18'], clinical['t13'], clinical['sca'],
-                json.dumps(clinical['cnv_list']), json.dumps(clinical['rat_list']),
-                json.dumps(full_z) if full_z else "{}", clinical['final'],
+                patient['id'], patient['name'], patient['age'], patient['weight'],
+                patient['height'], patient['bmi'], patient['weeks'], patient['notes'],
                 datetime.now().isoformat(), st.session_state.user['id']
             ))
-            result_id = c.lastrowid
+            patient_db_id = c.lastrowid
 
-            log_audit("SAVE_RESULT", f"Created result {result_id}", st.session_state.user['id'])
-            return result_id, "Success"
+        # Prepare QC metrics JSON
+        qc_metrics_json = json.dumps(qc_metrics) if qc_metrics else "{}"
+
+        c.execute("""
+            INSERT INTO results
+            (patient_id, panel_type, qc_status, qc_details, qc_advice, qc_metrics_json,
+             t21_res, t18_res, t13_res, sca_res,
+             cnv_json, rat_json, full_z_json, final_summary, created_at, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            patient_db_id, results['panel'], results['qc_status'],
+            str(results['qc_msgs']), results['qc_advice'], qc_metrics_json,
+            clinical['t21'], clinical['t18'], clinical['t13'], clinical['sca'],
+            json.dumps(clinical['cnv_list']), json.dumps(clinical['rat_list']),
+            json.dumps(full_z) if full_z else "{}", clinical['final'],
+            datetime.now().isoformat(), st.session_state.user['id']
+        ))
+        result_id = c.lastrowid
+
+        # Commit transaction
+        conn.commit()
+
+        log_audit("SAVE_RESULT", f"Created result {result_id} for patient {patient['id']}", st.session_state.user['id'])
+        return result_id, "Success"
     except Exception as e:
+        if conn:
+            conn.rollback()
         st.error(f"Database error: {e}")
         return 0, str(e)
+    finally:
+        if conn:
+            conn.close()
 
 def update_patient(patient_id: int, data: Dict) -> Tuple[bool, str]:
     """Update patient information."""
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             c = conn.cursor()
             c.execute("""
                 UPDATE patients
                 SET full_name = ?, age = ?, weight_kg = ?, height_cm = ?, bmi = ?,
                     weeks = ?, clinical_notes = ?
-                WHERE id = ?
+                WHERE id = ? AND (is_deleted = 0 OR is_deleted IS NULL)
             """, (
                 data['name'], data['age'], data['weight'], data['height'],
                 data['bmi'], data['weeks'], data['notes'], patient_id
             ))
+            conn.commit()
             log_audit("UPDATE_PATIENT", f"Updated patient {patient_id}", st.session_state.user['id'])
             return True, "Patient updated successfully"
     except Exception as e:
         return False, str(e)
 
 def get_patient_details(patient_id: int) -> Optional[Dict]:
-    """Get full patient details including all results."""
+    """Get full patient details including all results (excluding deleted patients)."""
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             c = conn.cursor()
             c.execute("""
                 SELECT p.id, p.mrn_id, p.full_name, p.age, p.weight_kg, p.height_cm,
                        p.bmi, p.weeks, p.clinical_notes, p.created_at
                 FROM patients p
-                WHERE p.id = ?
+                WHERE p.id = ? AND (p.is_deleted = 0 OR p.is_deleted IS NULL)
             """, (patient_id,))
             row = c.fetchone()
             if row:
@@ -424,21 +645,94 @@ def get_patient_details(patient_id: int) -> Optional[Dict]:
     return None
 
 def delete_record(report_id: int) -> Tuple[bool, str]:
-    """Delete with audit."""
+    """Delete a result record with audit logging."""
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             c = conn.cursor()
             c.execute("SELECT patient_id FROM results WHERE id = ?", (report_id,))
             row = c.fetchone()
-            if not row: return False, "Not found"
-            
+            if not row:
+                return False, "Result not found"
+
             c.execute("DELETE FROM results WHERE id = ?", (report_id,))
-            log_audit("DELETE", f"Deleted {report_id}", st.session_state.user['id'])
-            return True, f"Deleted {report_id}"
+            conn.commit()
+            log_audit("DELETE_RESULT", f"Deleted result {report_id}", st.session_state.user['id'])
+            return True, f"Deleted result {report_id}"
     except Exception as e:
         return False, str(e)
 
 # ==================== PDF IMPORT FUNCTIONS ====================
+
+# PDF validation constants
+MAX_PDF_SIZE_MB = 50
+ALLOWED_PDF_EXTENSIONS = {'.pdf'}
+MIN_TEXT_LENGTH = 100  # Minimum characters expected in a valid NIPT report
+
+def validate_pdf_file(pdf_file, filename: str = "") -> Tuple[bool, str]:
+    """Validate PDF file before processing.
+
+    Returns:
+        (is_valid, error_message)
+    """
+    # Check file extension
+    if filename:
+        ext = filename.lower().split('.')[-1] if '.' in filename else ''
+        if f'.{ext}' not in ALLOWED_PDF_EXTENSIONS:
+            return False, f"Invalid file type: .{ext}. Only PDF files are allowed."
+
+    # Check file size
+    try:
+        pdf_file.seek(0, 2)  # Seek to end
+        size_bytes = pdf_file.tell()
+        pdf_file.seek(0)  # Reset to beginning
+        size_mb = size_bytes / (1024 * 1024)
+        if size_mb > MAX_PDF_SIZE_MB:
+            return False, f"File too large: {size_mb:.1f}MB. Maximum allowed is {MAX_PDF_SIZE_MB}MB."
+    except Exception:
+        pass  # Can't check size, continue
+
+    # Verify it's a valid PDF by checking header
+    try:
+        pdf_file.seek(0)
+        header = pdf_file.read(8)
+        pdf_file.seek(0)
+        if isinstance(header, bytes):
+            header = header.decode('latin-1', errors='ignore')
+        if not header.startswith('%PDF'):
+            return False, "Invalid PDF file: missing PDF header signature."
+    except Exception:
+        pass  # Can't read header, continue
+
+    return True, ""
+
+def safe_float(value: str, default: float = 0.0) -> float:
+    """Safely convert string to float."""
+    try:
+        # Remove common non-numeric characters
+        cleaned = re.sub(r'[^\d.\-]', '', str(value))
+        return float(cleaned) if cleaned else default
+    except (ValueError, TypeError):
+        return default
+
+def safe_int(value: str, default: int = 0) -> int:
+    """Safely convert string to int."""
+    try:
+        cleaned = re.sub(r'[^\d\-]', '', str(value))
+        return int(cleaned) if cleaned else default
+    except (ValueError, TypeError):
+        return default
+
+def extract_with_fallback(text: str, patterns: List[str], group: int = 1,
+                          flags: int = re.IGNORECASE) -> Optional[str]:
+    """Try multiple regex patterns and return first match."""
+    for pattern in patterns:
+        try:
+            match = re.search(pattern, text, flags)
+            if match:
+                return match.group(group).strip()
+        except (re.error, IndexError):
+            continue
+    return None
 
 def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
     """Extract comprehensive patient and test data from PDF report.
@@ -454,14 +748,40 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
     - RAT findings with chromosome and Z-score
     - QC status and final interpretation
     - Clinical notes and recommendations
+
+    Returns:
+        Dict with extracted data or None if extraction fails
     """
+    extraction_warnings = []
+
+    # Validate PDF file first
+    is_valid, error_msg = validate_pdf_file(pdf_file, filename)
+    if not is_valid:
+        log_audit("PDF_VALIDATION_FAILED", f"{filename}: {error_msg}", None)
+        st.warning(f"PDF validation warning for {filename}: {error_msg}")
+        # Continue anyway - might still be processable
+
     try:
+        pdf_file.seek(0)  # Ensure we're at the beginning
         pdf_reader = PyPDF2.PdfReader(pdf_file)
+
+        if len(pdf_reader.pages) == 0:
+            st.error(f"PDF file {filename} has no pages")
+            return None
+
         text = ""
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
+        for page_num, page in enumerate(pdf_reader.pages):
+            try:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+            except Exception as e:
+                extraction_warnings.append(f"Could not extract text from page {page_num + 1}")
+
+        # Check if we got any text
+        if len(text.strip()) < MIN_TEXT_LENGTH:
+            st.warning(f"Limited text extracted from {filename}. The PDF may be scanned/image-based.")
+            extraction_warnings.append("Low text content - possible scanned PDF")
 
         # Clean up text - normalize whitespace and line endings
         text = re.sub(r'\s+', ' ', text)
@@ -1052,28 +1372,49 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
                     break
 
         # ===== EXTRACTION CONFIDENCE =====
-        # Calculate confidence based on how much data was extracted
-        extracted_fields = sum([
-            bool(data['patient_name']),
-            bool(data['mrn']),
-            data['age'] > 0,
-            data['weeks'] > 0,
-            data['cff'] > 0,
-            len(data['z_scores']) >= 3,
-            bool(data['final_result']),
-        ])
+        # Calculate confidence based on how much critical data was extracted
+        critical_fields = {
+            'patient_name': bool(data['patient_name']),
+            'mrn': bool(data['mrn']),
+            'age': data['age'] > 0,
+            'weeks': data['weeks'] > 0,
+            'cff': data['cff'] > 0,
+            'z_scores': len(data['z_scores']) >= 3,
+            'final_result': bool(data['final_result']),
+        }
 
-        if extracted_fields >= 6:
+        extracted_count = sum(critical_fields.values())
+        missing_fields = [k for k, v in critical_fields.items() if not v]
+
+        if extracted_count >= 6:
             data['extraction_confidence'] = 'HIGH'
-        elif extracted_fields >= 4:
+        elif extracted_count >= 4:
             data['extraction_confidence'] = 'MEDIUM'
         else:
             data['extraction_confidence'] = 'LOW'
 
+        # Store extraction metadata
+        data['_extraction_warnings'] = extraction_warnings
+        data['_missing_fields'] = missing_fields
+        data['_extracted_count'] = extracted_count
+
+        # Log extraction result
+        log_audit("PDF_EXTRACTED",
+                 f"{filename}: confidence={data['extraction_confidence']}, "
+                 f"fields={extracted_count}/7, mrn={data.get('mrn', 'NONE')}",
+                 st.session_state.user['id'] if 'user' in st.session_state else None)
+
         return data
 
+    except PyPDF2.errors.PdfReadError as e:
+        error_msg = f"Invalid or corrupted PDF file {filename}: {str(e)}"
+        st.error(error_msg)
+        log_audit("PDF_READ_ERROR", error_msg, None)
+        return None
     except Exception as e:
-        st.error(f"PDF extraction error in {filename}: {str(e)}")
+        error_msg = f"PDF extraction error in {filename}: {str(e)}"
+        st.error(error_msg)
+        log_audit("PDF_EXTRACTION_ERROR", error_msg, None)
         return None
 
 def parse_pdf_batch(pdf_files: List) -> Dict[str, List[Dict]]:
@@ -1181,7 +1522,7 @@ def get_clinical_recommendation(result: str, test_type: str) -> str:
 def generate_pdf_report(report_id: int) -> Optional[bytes]:
     """Generate comprehensive clinical PDF report for pathologist review."""
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             query = """
                 SELECT r.id, p.full_name, p.mrn_id, p.age, p.weeks, r.created_at, p.clinical_notes,
                        r.panel_type, r.qc_status, r.qc_details, r.qc_advice, r.qc_metrics_json,
@@ -1675,29 +2016,80 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
 
 # ==================== ANALYTICS ====================
 
+@st.cache_data(ttl=60)  # Cache for 60 seconds
 def get_analytics_data() -> Dict:
-    """Fetch analytics."""
-    with sqlite3.connect(DB_FILE) as conn:
-        total = pd.read_sql("SELECT COUNT(*) as count FROM results", conn).iloc[0]['count']
-        qc_stats = pd.read_sql("SELECT qc_status, COUNT(*) as count FROM results GROUP BY qc_status", conn)
-        outcomes = pd.read_sql("SELECT final_summary, COUNT(*) as count FROM results GROUP BY final_summary", conn)
-        trisomies = pd.read_sql("""
-            SELECT 
-                SUM(CASE WHEN t21_res LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as t21,
-                SUM(CASE WHEN t18_res LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as t18,
-                SUM(CASE WHEN t13_res LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as t13
-            FROM results
-        """, conn)
-        recent = pd.read_sql("""
-            SELECT DATE(r.created_at) as date, COUNT(*) as count 
-            FROM results r 
-            WHERE r.created_at >= date('now', '-30 days')
-            GROUP BY DATE(r.created_at)
-        """, conn)
-        panels = pd.read_sql("SELECT panel_type, COUNT(*) as count FROM results GROUP BY panel_type", conn)
-        
-        return {'total': total, 'qc_stats': qc_stats, 'outcomes': outcomes,
-                'trisomies': trisomies, 'recent': recent, 'panels': panels}
+    """Fetch analytics data with caching for better performance."""
+    try:
+        with get_db_connection() as conn:
+            # Combined query for basic stats to reduce database calls
+            stats_query = """
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN qc_status = 'PASS' THEN 1 ELSE 0 END) as qc_pass,
+                    SUM(CASE WHEN qc_status = 'FAIL' THEN 1 ELSE 0 END) as qc_fail,
+                    SUM(CASE WHEN qc_status = 'WARNING' THEN 1 ELSE 0 END) as qc_warning,
+                    SUM(CASE WHEN t21_res LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as t21,
+                    SUM(CASE WHEN t18_res LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as t18,
+                    SUM(CASE WHEN t13_res LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as t13
+                FROM results
+            """
+            stats = pd.read_sql(stats_query, conn)
+
+            # Get counts from combined query
+            total = stats.iloc[0]['total'] if not stats.empty else 0
+
+            # QC stats as DataFrame
+            qc_stats = pd.DataFrame({
+                'qc_status': ['PASS', 'FAIL', 'WARNING'],
+                'count': [
+                    stats.iloc[0]['qc_pass'] or 0,
+                    stats.iloc[0]['qc_fail'] or 0,
+                    stats.iloc[0]['qc_warning'] or 0
+                ]
+            })
+
+            # Trisomy stats
+            trisomies = pd.DataFrame({
+                't21': [stats.iloc[0]['t21'] or 0],
+                't18': [stats.iloc[0]['t18'] or 0],
+                't13': [stats.iloc[0]['t13'] or 0]
+            })
+
+            # These queries still need to be separate
+            outcomes = pd.read_sql(
+                "SELECT final_summary, COUNT(*) as count FROM results GROUP BY final_summary",
+                conn
+            )
+            recent = pd.read_sql("""
+                SELECT DATE(created_at) as date, COUNT(*) as count
+                FROM results
+                WHERE created_at >= date('now', '-30 days')
+                GROUP BY DATE(created_at)
+                ORDER BY date
+            """, conn)
+            panels = pd.read_sql(
+                "SELECT panel_type, COUNT(*) as count FROM results GROUP BY panel_type",
+                conn
+            )
+
+            return {
+                'total': total,
+                'qc_stats': qc_stats,
+                'outcomes': outcomes,
+                'trisomies': trisomies,
+                'recent': recent,
+                'panels': panels
+            }
+    except Exception as e:
+        st.error(f"Error loading analytics: {e}")
+        return {
+            'total': 0,
+            'qc_stats': pd.DataFrame({'qc_status': [], 'count': []}),
+            'outcomes': pd.DataFrame({'final_summary': [], 'count': []}),
+            'trisomies': pd.DataFrame({'t21': [0], 't18': [0], 't13': [0]}),
+            'recent': pd.DataFrame({'date': [], 'count': []}),
+            'panels': pd.DataFrame({'panel_type': [], 'count': []})
+        }
 
 def render_analytics_dashboard():
     """Render analytics dashboard."""
@@ -1762,34 +2154,108 @@ def render_analytics_dashboard():
 
 # ==================== UI MAIN ====================
 
+# Session timeout in minutes
+SESSION_TIMEOUT_MINUTES = 60
+
+def check_session_timeout() -> bool:
+    """Check if the session has timed out. Returns True if session is valid."""
+    if 'last_activity' not in st.session_state:
+        st.session_state.last_activity = datetime.now()
+        return True
+
+    elapsed = (datetime.now() - st.session_state.last_activity).total_seconds() / 60
+    if elapsed > SESSION_TIMEOUT_MINUTES:
+        # Session expired
+        st.session_state.authenticated = False
+        st.session_state.user = None
+        log_audit("SESSION_TIMEOUT", "Session expired due to inactivity",
+                 st.session_state.get('user', {}).get('id'))
+        return False
+
+    # Update last activity
+    st.session_state.last_activity = datetime.now()
+    return True
+
+def render_force_password_change():
+    """Render password change dialog for first-time login."""
+    st.markdown("<h1 style='text-align: center;'>🔑 Password Change Required</h1>", unsafe_allow_html=True)
+    st.warning("You must change your password before continuing. This is required for security.")
+
+    st.markdown("**Password Requirements:**")
+    st.markdown("""
+    - At least 8 characters long
+    - At least one uppercase letter (A-Z)
+    - At least one lowercase letter (a-z)
+    - At least one number (0-9)
+    """)
+
+    with st.form("force_password_change_form"):
+        new_password = st.text_input("New Password", type="password")
+        confirm_password = st.text_input("Confirm New Password", type="password")
+
+        if st.form_submit_button("Change Password", type="primary"):
+            if not new_password or not confirm_password:
+                st.error("Both password fields are required")
+            elif new_password != confirm_password:
+                st.error("Passwords do not match")
+            else:
+                is_valid, error_msg = validate_password_strength(new_password)
+                if not is_valid:
+                    st.error(error_msg)
+                else:
+                    # Update password and clear must_change_password flag
+                    try:
+                        with get_db_connection() as conn:
+                            c = conn.cursor()
+                            new_hash = hash_password(new_password)
+                            c.execute("""
+                                UPDATE users SET password_hash = ?, must_change_password = 0
+                                WHERE id = ?
+                            """, (new_hash, st.session_state.user['id']))
+                            conn.commit()
+
+                        st.session_state.user['must_change_password'] = False
+                        log_audit("PASSWORD_CHANGED_FORCED", "User changed password on first login",
+                                 st.session_state.user['id'])
+                        st.success("Password changed successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to update password: {e}")
+
 def render_login():
-    """Login UI."""
+    """Login UI with security features."""
     st.markdown("<h1 style='text-align: center;'>🧬 NRIS v2.0</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>NIPT Result Interpretation System</p>", unsafe_allow_html=True)
-    
+
     username = st.text_input("Username", key="login_user")
     password = st.text_input("Password", type="password", key="login_pass")
-    
+
     if st.button("🔐 Login", use_container_width=True, type="primary"):
         if username and password:
             user = authenticate_user(username, password)
             if user:
-                st.session_state.user = user
-                st.session_state.authenticated = True
-                st.rerun()
+                # Check if there's an error (e.g., account locked)
+                if isinstance(user, dict) and 'error' in user:
+                    st.error(f"🔒 {user['error']}")
+                else:
+                    st.session_state.user = user
+                    st.session_state.authenticated = True
+                    st.session_state.last_activity = datetime.now()
+                    st.rerun()
             else:
                 st.error("❌ Invalid username or password")
         else:
             st.warning("⚠️ Please enter both username and password")
-    
+
     st.divider()
-    st.info("💡 Default credentials:\n- Username: **admin**\n- Password: **admin123**")
+    st.info("💡 Default credentials:\n- Username: **admin**\n- Password: **admin123**\n\n"
+            "⚠️ You will be required to change the default password on first login.")
 
 def main():
     st.set_page_config(page_title="NRIS v2.0", layout="wide", page_icon="🧬")
     init_database()
-    
-    # Session state
+
+    # Session state initialization
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
     if 'cnv_list' not in st.session_state:
@@ -1802,30 +2268,48 @@ def main():
         st.session_state.current_result = {}
     if 'last_report_id' not in st.session_state:
         st.session_state.last_report_id = None
-    
+
     # Authentication check
     if not st.session_state.authenticated:
         render_login()
         return
-    
+
+    # Session timeout check
+    if not check_session_timeout():
+        st.warning("Your session has expired due to inactivity. Please log in again.")
+        render_login()
+        return
+
+    # Force password change check
+    if st.session_state.user.get('must_change_password', False):
+        render_force_password_change()
+        return
+
     # Sidebar
     with st.sidebar:
         st.title(f"👤 {st.session_state.user['name']}")
         st.caption(f"Role: {st.session_state.user['role']}")
-        
+
         if st.button("🚪 Logout"):
+            log_audit("LOGOUT", f"User {st.session_state.user['username']} logged out",
+                     st.session_state.user['id'])
             st.session_state.authenticated = False
+            st.session_state.user = None
             st.rerun()
-        
+
         st.divider()
-        
-        # Quick stats
-        with sqlite3.connect(DB_FILE) as conn:
-            total = pd.read_sql("SELECT COUNT(*) as c FROM results", conn).iloc[0]['c']
-            today = pd.read_sql("SELECT COUNT(*) as c FROM results WHERE DATE(created_at) = DATE('now')", conn).iloc[0]['c']
-        
-        st.metric("Total Records", total)
-        st.metric("Today", today)
+
+        # Quick stats with caching
+        try:
+            with get_db_connection() as conn:
+                total = pd.read_sql("SELECT COUNT(*) as c FROM results", conn).iloc[0]['c']
+                today = pd.read_sql("SELECT COUNT(*) as c FROM results WHERE DATE(created_at) = DATE('now')", conn).iloc[0]['c']
+
+            st.metric("Total Records", total)
+            st.metric("Today", today)
+        except Exception:
+            st.metric("Total Records", "N/A")
+            st.metric("Today", "N/A")
     
     # Main tabs
     tabs = st.tabs(["🔬 Analysis", "📊 Registry", "📈 Analytics", "📂 Batch", "⚙️ Settings"])
@@ -2054,37 +2538,43 @@ def main():
             st.write("")
             if st.button("🔄 Refresh"): st.rerun()
 
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             query = """
-                SELECT r.id, r.created_at, p.full_name, p.mrn_id, r.panel_type, 
-                       r.qc_status, r.final_summary 
-                FROM results r 
-                JOIN patients p ON p.id = r.patient_id 
+                SELECT r.id, r.created_at, p.full_name, p.mrn_id, r.panel_type,
+                       r.qc_status, r.final_summary
+                FROM results r
+                JOIN patients p ON p.id = r.patient_id
+                WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
                 ORDER BY r.id DESC
             """
             df = pd.read_sql(query, conn)
-        
+
         if not df.empty:
             if search_term:
-                df = df[df['full_name'].str.contains(search_term, case=False, na=False) | 
+                df = df[df['full_name'].str.contains(search_term, case=False, na=False) |
                        df['mrn_id'].str.contains(search_term, case=False, na=False)]
-            
+
             df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%Y-%m-%d %H:%M')
-            
+
             st.dataframe(df, use_container_width=True, height=400)
-            
+
             st.divider()
-            
+
             col_exp, col_json, col_del, col_pdf = st.columns(4)
 
             with col_exp:
-                full_dump = pd.read_sql("SELECT * FROM results r JOIN patients p ON p.id = r.patient_id", conn)
+                with get_db_connection() as exp_conn:
+                    full_dump = pd.read_sql("""
+                        SELECT * FROM results r
+                        JOIN patients p ON p.id = r.patient_id
+                        WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
+                    """, exp_conn)
                 st.download_button("📥 Export CSV", full_dump.to_csv(index=False),
                                  "nipt_registry.csv", "text/csv")
 
             with col_json:
                 # Generate comprehensive JSON export
-                with sqlite3.connect(DB_FILE) as json_conn:
+                with get_db_connection() as json_conn:
                     json_query = """
                         SELECT r.id as report_id, r.created_at as report_date,
                                p.full_name, p.mrn_id, p.age, p.weight_kg, p.height_cm, p.bmi, p.weeks,
@@ -2168,12 +2658,13 @@ def main():
             st.divider()
             st.subheader("👤 Patient Details & Edit")
 
-            # Get list of unique patients
-            with sqlite3.connect(DB_FILE) as patient_conn:
+            # Get list of unique patients (excluding deleted)
+            with get_db_connection() as patient_conn:
                 patients_query = """
                     SELECT DISTINCT p.id, p.mrn_id, p.full_name, COUNT(r.id) as result_count
                     FROM patients p
                     LEFT JOIN results r ON r.patient_id = p.id
+                    WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
                     GROUP BY p.id
                     ORDER BY p.full_name
                 """
@@ -2240,7 +2731,7 @@ def main():
 
                         # Show patient's test results
                         with st.expander("📊 Patient Test Results", expanded=False):
-                            with sqlite3.connect(DB_FILE) as results_conn:
+                            with get_db_connection() as results_conn:
                                 results_query = """
                                     SELECT r.id, r.created_at, r.panel_type, r.qc_status,
                                            r.t21_res, r.t18_res, r.t13_res, r.sca_res, r.final_summary
@@ -2793,6 +3284,13 @@ def main():
 
         # Password Change Section (available to all users)
         st.markdown("**🔑 Change Password**")
+        st.markdown("""
+        Password requirements:
+        - At least 8 characters long
+        - At least one uppercase letter (A-Z)
+        - At least one lowercase letter (a-z)
+        - At least one number (0-9)
+        """)
         with st.form("change_password_form"):
             current_password = st.text_input("Current Password", type="password", key="curr_pwd")
             new_password_1 = st.text_input("New Password", type="password", key="new_pwd1")
@@ -2803,25 +3301,29 @@ def main():
                     st.error("All fields are required")
                 elif new_password_1 != new_password_2:
                     st.error("New passwords do not match")
-                elif len(new_password_1) < 6:
-                    st.error("New password must be at least 6 characters")
                 else:
-                    # Verify current password
-                    with sqlite3.connect(DB_FILE) as conn:
-                        c = conn.cursor()
-                        c.execute("SELECT password_hash FROM users WHERE id = ?",
-                                 (st.session_state.user['id'],))
-                        row = c.fetchone()
-                        if row and verify_password(current_password, row[0]):
-                            # Update password
-                            new_hash = hash_password(new_password_1)
-                            c.execute("UPDATE users SET password_hash = ? WHERE id = ?",
-                                     (new_hash, st.session_state.user['id']))
-                            st.success("✅ Password updated successfully")
-                            log_audit("PASSWORD_CHANGE", "User changed password",
-                                     st.session_state.user['id'])
-                        else:
-                            st.error("Current password is incorrect")
+                    # Validate password strength
+                    is_valid, error_msg = validate_password_strength(new_password_1)
+                    if not is_valid:
+                        st.error(error_msg)
+                    else:
+                        # Verify current password
+                        with get_db_connection() as conn:
+                            c = conn.cursor()
+                            c.execute("SELECT password_hash FROM users WHERE id = ?",
+                                     (st.session_state.user['id'],))
+                            row = c.fetchone()
+                            if row and verify_password(current_password, row[0]):
+                                # Update password
+                                new_hash = hash_password(new_password_1)
+                                c.execute("UPDATE users SET password_hash = ? WHERE id = ?",
+                                         (new_hash, st.session_state.user['id']))
+                                conn.commit()
+                                st.success("✅ Password updated successfully")
+                                log_audit("PASSWORD_CHANGE", "User changed password",
+                                         st.session_state.user['id'])
+                            else:
+                                st.error("Current password is incorrect")
 
         st.divider()
 
@@ -2834,20 +3336,24 @@ def main():
                 new_fullname = st.text_input("Full Name")
                 new_role = st.selectbox("Role", ["technician", "geneticist", "admin"],
                                        help="Technician: Data entry and analysis. Geneticist: Analysis, review and approval. Admin: Full access including user management.")
+                require_pwd_change = st.checkbox("Require password change on first login", value=True)
 
                 if st.form_submit_button("Create User"):
                     if new_username and new_password:
-                        if len(new_password) < 6:
-                            st.error("Password must be at least 6 characters")
+                        is_valid, error_msg = validate_password_strength(new_password)
+                        if not is_valid:
+                            st.error(error_msg)
                         else:
                             try:
-                                with sqlite3.connect(DB_FILE) as conn:
+                                with get_db_connection() as conn:
                                     c = conn.cursor()
                                     c.execute("""
-                                        INSERT INTO users (username, password_hash, full_name, role, created_at)
-                                        VALUES (?, ?, ?, ?, ?)
+                                        INSERT INTO users (username, password_hash, full_name, role, created_at, must_change_password)
+                                        VALUES (?, ?, ?, ?, ?, ?)
                                     """, (new_username, hash_password(new_password),
-                                         new_fullname, new_role, datetime.now().isoformat()))
+                                         new_fullname, new_role, datetime.now().isoformat(),
+                                         1 if require_pwd_change else 0))
+                                    conn.commit()
                                     st.success(f"✅ User '{new_username}' created with role '{new_role}'")
                                     log_audit("CREATE_USER", f"Created user {new_username} with role {new_role}",
                                              st.session_state.user['id'])
@@ -2858,7 +3364,7 @@ def main():
 
             # List existing users
             st.markdown("**📋 Existing Users**")
-            with sqlite3.connect(DB_FILE) as conn:
+            with get_db_connection() as conn:
                 users_df = pd.read_sql("""
                     SELECT id, username, full_name, role, created_at, last_login
                     FROM users ORDER BY id
@@ -2866,20 +3372,35 @@ def main():
 
             if not users_df.empty:
                 st.dataframe(users_df, use_container_width=True, height=200)
+
+            # Database maintenance section
+            st.divider()
+            st.markdown("**🧹 Database Maintenance**")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Clean Up Orphaned Patients"):
+                    count, msg = cleanup_orphaned_patients()
+                    if count > 0:
+                        st.success(msg)
+                    else:
+                        st.info("No orphaned patients found")
+            with col2:
+                st.caption("Removes patient records with no associated results")
+
         else:
             st.info("Admin access required for user management")
-        
+
         st.divider()
-        
+
         st.subheader("Audit Log")
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             audit = pd.read_sql("""
-                SELECT a.timestamp, u.username, a.action, a.details 
-                FROM audit_log a 
-                LEFT JOIN users u ON u.id = a.user_id 
+                SELECT a.timestamp, u.username, a.action, a.details
+                FROM audit_log a
+                LEFT JOIN users u ON u.id = a.user_id
                 ORDER BY a.id DESC LIMIT 50
             """, conn)
-        
+
         if not audit.empty:
             st.dataframe(audit, use_container_width=True, height=300)
         else:
