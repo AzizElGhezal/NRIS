@@ -1,7 +1,7 @@
 # NRIS - NIPT Result Interpretation Software
 
-**Version 2.1 Enhanced Edition**
-*Advanced Clinical Genetics Dashboard with Enhanced Security, Performance & Reliability*
+**Version 2.2 Enhanced Edition**
+*Advanced Clinical Genetics Dashboard with Bilingual Support, Enhanced Security & Reliability*
 
 ---
 
@@ -54,6 +54,12 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
   - Panel utilization reports
   - Cached analytics for better performance
 
+- **Bilingual PDF Reporting (NEW in v2.2)**
+  - Professional clinical reports in **English** and **French**
+  - Language selection per report or default preference
+  - Complete translation of all clinical content
+  - Localized recommendations and disclaimers
+
 - **Automated PDF Reporting**
   - Professional clinical reports with customizable headers
   - QC metrics summary and interpretation
@@ -66,6 +72,38 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
   - Login/logout tracking
   - Failed login attempt logging
   - Export capabilities for compliance reviews
+
+---
+
+## What's New in v2.2
+
+### Bilingual PDF Reports
+- **Full French Language Support**: Generate PDF reports in both English and French
+  - All clinical content fully translated including:
+    - Section headers and labels
+    - QC assessment terminology
+    - Trisomy and SCA result descriptions
+    - Clinical recommendations
+    - Limitations and disclaimers
+    - Authorization section
+- **Language Selection Options**:
+  - Set default language in Settings tab
+  - Choose language per report in Analysis and Registry tabs
+  - Reports include language suffix in filename (e.g., `Report_123_FR.pdf`)
+
+### Improved User Interface for Technicians
+- **Helpful Tooltips**: Added explanatory tooltips throughout the Analysis tab
+  - Patient information fields with guidance
+  - Sequencing metrics with reference ranges
+  - Z-score thresholds and interpretation help
+  - SCA type explanations
+- **Visual Guidance**: Added captions showing risk thresholds at a glance
+- **Streamlined Workflow**: Improved form layout and labeling
+
+### Report Settings
+- New "Report Settings" section in Settings tab
+- Persistent language preference saved to configuration
+- Audit logging for language preference changes
 
 ---
 
@@ -381,7 +419,20 @@ Regularly backup the following files:
 
 ## Version History
 
-### Version 2.1 (Current)
+### Version 2.2 (Current)
+**Bilingual Support**
+- Full French language support for PDF reports
+- Language selection in Analysis and Registry tabs
+- Default language preference in Settings
+- Complete translation of clinical content
+
+**Technician Experience**
+- Helpful tooltips on all input fields
+- Visual guidance with threshold captions
+- Improved form layout and labeling
+- Streamlined analysis workflow
+
+### Version 2.1
 **Clinical Workflow**
 - New "Reportable" status replaces confusing "Risk Category"
 - Clear Yes/No indicator for whether results can be reported
@@ -455,4 +506,4 @@ This software is designed to assist healthcare professionals in interpreting NIP
 
 ---
 
-**NRIS v2.1 Enhanced Edition** - Advancing Clinical Genetics Through Technology
+**NRIS v2.2 Enhanced Edition** - Advancing Clinical Genetics Through Technology

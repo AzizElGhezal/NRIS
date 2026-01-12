@@ -1,9 +1,15 @@
 """
-NIPT Result Interpretation Software (NRIS) v2.1 - Enhanced Edition
+NIPT Result Interpretation Software (NRIS) v2.2 - Enhanced Edition
 By AzizElGhezal
 ---------------------------
 Advanced clinical genetics dashboard with authentication, analytics,
 PDF reports, visualizations, and comprehensive audit logging.
+
+Version 2.2 Improvements:
+- Bilingual PDF reports (English and French)
+- Language preference settings
+- Improved UI for technicians with helpful tooltips
+- Streamlined workflow
 
 Version 2.1 Improvements:
 - Enhanced security (password complexity, account lockout, session timeout)
@@ -60,8 +66,267 @@ DEFAULT_CONFIG = {
         'SCA_THRESHOLD': 4.5,
         'RAT_POSITIVE': 8.0,
         'RAT_AMBIGUOUS': 4.5
+    },
+    'REPORT_LANGUAGE': 'en'  # Default language for PDF reports: 'en' or 'fr'
+}
+
+# ==================== TRANSLATIONS ====================
+# Bilingual support for PDF reports (English and French)
+
+TRANSLATIONS = {
+    'en': {
+        # PDF Header
+        'lab_title': 'CLINICAL GENETICS LABORATORY',
+        'report_title': 'Non-Invasive Prenatal Testing (NIPT) Report',
+
+        # Report Metadata
+        'report_id': 'Report ID:',
+        'report_date': 'Report Date:',
+        'panel_type': 'Panel Type:',
+        'report_time': 'Report Time:',
+
+        # Patient Information
+        'patient_info': 'PATIENT INFORMATION',
+        'name': 'Name:',
+        'mrn': 'MRN:',
+        'maternal_age': 'Maternal Age:',
+        'gestational_age': 'Gestational Age:',
+        'weight': 'Weight:',
+        'height': 'Height:',
+        'bmi': 'BMI:',
+        'years': 'years',
+        'weeks': 'weeks',
+
+        # QC Assessment
+        'qc_assessment': 'QUALITY CONTROL ASSESSMENT',
+        'qc_status': 'QC Status',
+        'parameter': 'Parameter',
+        'value': 'Value',
+        'reference_range': 'Reference Range',
+        'status': 'Status',
+        'fetal_fraction': 'Fetal Fraction (Cff)',
+        'gc_content': 'GC Content',
+        'seq_reads': 'Sequencing Reads',
+        'unique_rate': 'Unique Read Rate',
+        'error_rate': 'Error Rate',
+        'quality_score': 'Quality Score',
+        'qc_recommendation': 'QC Recommendation:',
+        'qc_override_applied': 'QC Override Applied:',
+        'original_status': 'Original status was',
+        'validated_by': 'Validated by',
+        'reason': 'Reason:',
+        'override': 'Override',
+        'pass': 'PASS',
+        'fail': 'FAIL',
+        'warning': 'WARNING',
+
+        # Results Section
+        'aneuploidy_results': 'ANEUPLOIDY SCREENING RESULTS',
+        'condition': 'Condition',
+        'result': 'Result',
+        'z_score': 'Z-Score',
+        'reportable': 'Reportable',
+        'ref': 'Ref',
+        'trisomy_21': 'Trisomy 21 (Down Syndrome)',
+        'trisomy_18': 'Trisomy 18 (Edwards Syndrome)',
+        'trisomy_13': 'Trisomy 13 (Patau Syndrome)',
+        'sca': 'Sex Chromosome Aneuploidy',
+        'fetal_sex': 'Fetal Sex:',
+        'male': 'Male',
+        'female': 'Female',
+        'undetermined': 'Undetermined',
+
+        # CNV & RAT
+        'cnv_findings': 'COPY NUMBER VARIATION (CNV) FINDINGS',
+        'rat_findings': 'RARE AUTOSOMAL TRISOMY (RAT) FINDINGS',
+        'finding': 'Finding',
+        'clinical_significance': 'Clinical Significance',
+
+        # Maternal Factors
+        'maternal_factors': 'MATERNAL FACTORS & AGE-BASED RISK',
+        'bmi_underweight': '(Underweight)',
+        'bmi_normal': '(Normal)',
+        'bmi_overweight': '(Overweight)',
+        'bmi_obese': '(Obese - may affect fetal fraction)',
+        'age_risk_text': 'Based on maternal age of {age} years, the a priori risks are: Trisomy 21: 1 in {t21}, Trisomy 18: 1 in {t18}, Trisomy 13: 1 in {t13}',
+
+        # Final Interpretation
+        'final_interpretation': 'FINAL INTERPRETATION',
+
+        # Clinical Recommendations
+        'clinical_recommendations': 'CLINICAL RECOMMENDATIONS',
+        'no_high_risk': 'No high-risk findings detected. Continue standard prenatal care.',
+        'nipt_screening': 'NIPT is a screening test. It does not diagnose chromosomal abnormalities.',
+        'rec_t21_positive': 'Confirmatory diagnostic testing (amniocentesis or CVS) is strongly recommended. Genetic counseling should be offered.',
+        'rec_t18_positive': 'Confirmatory diagnostic testing (amniocentesis or CVS) is strongly recommended. Detailed ultrasound and genetic counseling advised.',
+        'rec_t13_positive': 'Confirmatory diagnostic testing (amniocentesis or CVS) is strongly recommended. Detailed ultrasound and genetic counseling advised.',
+        'rec_sca_positive': 'Genetic counseling recommended. Confirmatory testing may be considered based on clinical judgment.',
+        'rec_cnv_positive': 'Detailed ultrasound recommended. Genetic counseling and possible confirmatory testing advised.',
+        'rec_rat_positive': 'Genetic counseling recommended. Clinical correlation and possible confirmatory testing advised.',
+        'rec_high_risk': 'Re-analysis recommended. If persistent, consider confirmatory diagnostic testing.',
+        'rec_low_risk': 'No additional testing indicated based on NIPT result alone. Standard prenatal care recommended.',
+
+        # Clinical Notes
+        'clinical_notes': 'CLINICAL NOTES & OBSERVATIONS',
+        'key_markers': 'Key clinical markers:',
+        'nt_noted': 'Nuchal Translucency noted',
+        'ff_concerns': 'Fetal Fraction concerns noted',
+        'ivf_noted': 'ART/IVF conception noted',
+        'multiple_noted': 'Multiple gestation noted',
+
+        # Limitations
+        'limitations': 'LIMITATIONS AND DISCLAIMER',
+        'important_info': 'Important Information:',
+        'disclaimer_1': 'NIPT is a screening test, not a diagnostic test. Positive results should be confirmed with diagnostic testing (amniocentesis or CVS).',
+        'disclaimer_2': 'False positive and false negative results can occur. A negative result does not eliminate the possibility of chromosomal abnormalities.',
+        'disclaimer_3': 'This test screens for specific chromosomal conditions and does not detect all genetic disorders.',
+        'disclaimer_4': 'Results should be interpreted in conjunction with other clinical findings, ultrasound, and maternal history.',
+        'disclaimer_5': 'Test performance may be affected by factors including: low fetal fraction, maternal chromosomal abnormalities, confined placental mosaicism, vanishing twin, or maternal malignancy.',
+        'disclaimer_6': 'Genetic counseling is recommended for all patients, especially those with positive or inconclusive results.',
+
+        # Authorization
+        'authorization': 'AUTHORIZATION',
+        'performed_by': 'Performed by:',
+        'reviewed_by': 'Reviewed by:',
+        'approved_by': 'Approved by:',
+        'date': 'Date:',
+        'clinical_pathologist': 'Clinical Pathologist',
+        'lab_director': 'Laboratory Director',
+        'lab_staff': 'Laboratory Staff',
+
+        # Footer
+        'report_generated': 'Report generated:',
+        'version': 'NRIS v2.2 Enhanced Edition',
+    },
+    'fr': {
+        # PDF Header
+        'lab_title': 'LABORATOIRE DE GENETIQUE CLINIQUE',
+        'report_title': 'Rapport de Depistage Prenatal Non Invasif (DPNI)',
+
+        # Report Metadata
+        'report_id': 'ID du rapport:',
+        'report_date': 'Date du rapport:',
+        'panel_type': 'Type de panel:',
+        'report_time': 'Heure du rapport:',
+
+        # Patient Information
+        'patient_info': 'INFORMATIONS PATIENTE',
+        'name': 'Nom:',
+        'mrn': 'NDM:',
+        'maternal_age': 'Age maternel:',
+        'gestational_age': 'Age gestationnel:',
+        'weight': 'Poids:',
+        'height': 'Taille:',
+        'bmi': 'IMC:',
+        'years': 'ans',
+        'weeks': 'semaines',
+
+        # QC Assessment
+        'qc_assessment': 'EVALUATION DU CONTROLE QUALITE',
+        'qc_status': 'Statut CQ',
+        'parameter': 'Parametre',
+        'value': 'Valeur',
+        'reference_range': 'Plage de reference',
+        'status': 'Statut',
+        'fetal_fraction': 'Fraction foetale (Cff)',
+        'gc_content': 'Contenu GC',
+        'seq_reads': 'Lectures de sequencage',
+        'unique_rate': 'Taux de lectures uniques',
+        'error_rate': "Taux d'erreur",
+        'quality_score': 'Score de qualite',
+        'qc_recommendation': 'Recommandation CQ:',
+        'qc_override_applied': 'Derogation CQ appliquee:',
+        'original_status': 'Le statut original etait',
+        'validated_by': 'Valide par',
+        'reason': 'Raison:',
+        'override': 'Derogation',
+        'pass': 'CONFORME',
+        'fail': 'NON CONFORME',
+        'warning': 'ATTENTION',
+
+        # Results Section
+        'aneuploidy_results': 'RESULTATS DU DEPISTAGE DES ANEUPLOIDIES',
+        'condition': 'Condition',
+        'result': 'Resultat',
+        'z_score': 'Score Z',
+        'reportable': 'Rapportable',
+        'ref': 'Ref',
+        'trisomy_21': 'Trisomie 21 (Syndrome de Down)',
+        'trisomy_18': 'Trisomie 18 (Syndrome d\'Edwards)',
+        'trisomy_13': 'Trisomie 13 (Syndrome de Patau)',
+        'sca': 'Aneuploidie des chromosomes sexuels',
+        'fetal_sex': 'Sexe foetal:',
+        'male': 'Masculin',
+        'female': 'Feminin',
+        'undetermined': 'Indetermine',
+
+        # CNV & RAT
+        'cnv_findings': 'RESULTATS DES VARIATIONS DU NOMBRE DE COPIES (CNV)',
+        'rat_findings': 'RESULTATS DES TRISOMIES AUTOSOMIQUES RARES (TAR)',
+        'finding': 'Resultat',
+        'clinical_significance': 'Signification clinique',
+
+        # Maternal Factors
+        'maternal_factors': 'FACTEURS MATERNELS ET RISQUE LIE A L\'AGE',
+        'bmi_underweight': '(Insuffisance ponderale)',
+        'bmi_normal': '(Normal)',
+        'bmi_overweight': '(Surpoids)',
+        'bmi_obese': '(Obesite - peut affecter la fraction foetale)',
+        'age_risk_text': 'Selon l\'age maternel de {age} ans, les risques a priori sont: Trisomie 21: 1 sur {t21}, Trisomie 18: 1 sur {t18}, Trisomie 13: 1 sur {t13}',
+
+        # Final Interpretation
+        'final_interpretation': 'INTERPRETATION FINALE',
+
+        # Clinical Recommendations
+        'clinical_recommendations': 'RECOMMANDATIONS CLINIQUES',
+        'no_high_risk': 'Aucun resultat a haut risque detecte. Poursuivre les soins prenataux standards.',
+        'nipt_screening': 'Le DPNI est un test de depistage. Il ne diagnostique pas les anomalies chromosomiques.',
+        'rec_t21_positive': 'Un test diagnostique de confirmation (amniocent&egrave;se ou biopsie de villosites choriales) est fortement recommande. Un conseil genetique devrait etre propose.',
+        'rec_t18_positive': 'Un test diagnostique de confirmation (amniocent&egrave;se ou biopsie de villosites choriales) est fortement recommande. Une echographie detaillee et un conseil genetique sont conseilles.',
+        'rec_t13_positive': 'Un test diagnostique de confirmation (amniocent&egrave;se ou biopsie de villosites choriales) est fortement recommande. Une echographie detaillee et un conseil genetique sont conseilles.',
+        'rec_sca_positive': 'Conseil genetique recommande. Un test de confirmation peut etre envisage selon le jugement clinique.',
+        'rec_cnv_positive': 'Echographie detaillee recommandee. Conseil genetique et eventuel test de confirmation conseilles.',
+        'rec_rat_positive': 'Conseil genetique recommande. Correlation clinique et eventuel test de confirmation conseilles.',
+        'rec_high_risk': 'Re-analyse recommandee. Si le resultat persiste, envisager un test diagnostique de confirmation.',
+        'rec_low_risk': 'Aucun test supplementaire indique sur la seule base du resultat DPNI. Soins prenataux standards recommandes.',
+
+        # Clinical Notes
+        'clinical_notes': 'NOTES CLINIQUES ET OBSERVATIONS',
+        'key_markers': 'Marqueurs cliniques cles:',
+        'nt_noted': 'Clarte nucale notee',
+        'ff_concerns': 'Preoccupations concernant la fraction foetale notees',
+        'ivf_noted': 'Conception par PMA/FIV notee',
+        'multiple_noted': 'Grossesse multiple notee',
+
+        # Limitations
+        'limitations': 'LIMITES ET AVERTISSEMENT',
+        'important_info': 'Informations importantes:',
+        'disclaimer_1': 'Le DPNI est un test de depistage, pas un test diagnostique. Les resultats positifs doivent etre confirmes par un test diagnostique (amniocent&egrave;se ou biopsie de villosites choriales).',
+        'disclaimer_2': 'Des faux positifs et faux negatifs peuvent survenir. Un resultat negatif n\'elimine pas la possibilite d\'anomalies chromosomiques.',
+        'disclaimer_3': 'Ce test depiste des conditions chromosomiques specifiques et ne detecte pas tous les troubles genetiques.',
+        'disclaimer_4': 'Les resultats doivent etre interpretes en conjonction avec d\'autres donnees cliniques, l\'echographie et l\'historique maternel.',
+        'disclaimer_5': 'La performance du test peut etre affectee par des facteurs incluant: faible fraction foetale, anomalies chromosomiques maternelles, mosaicisme placentaire confine, jumeau evanescent ou malignite maternelle.',
+        'disclaimer_6': 'Un conseil genetique est recommande pour toutes les patientes, en particulier celles avec des resultats positifs ou non concluants.',
+
+        # Authorization
+        'authorization': 'AUTORISATION',
+        'performed_by': 'Realise par:',
+        'reviewed_by': 'Revise par:',
+        'approved_by': 'Approuve par:',
+        'date': 'Date:',
+        'clinical_pathologist': 'Pathologiste clinique',
+        'lab_director': 'Directeur du laboratoire',
+        'lab_staff': 'Personnel du laboratoire',
+
+        # Footer
+        'report_generated': 'Rapport genere:',
+        'version': 'NRIS v2.1 Edition Amelioree',
     }
 }
+
+def get_translation(key: str, lang: str = 'en') -> str:
+    """Get translated text for a given key and language."""
+    return TRANSLATIONS.get(lang, TRANSLATIONS['en']).get(key, TRANSLATIONS['en'].get(key, key))
 
 # ==================== DATABASE FUNCTIONS ====================
 
@@ -1932,9 +2197,26 @@ def get_clinical_recommendation(result: str, test_type: str) -> str:
         return recommendations['LOW']['default']
 
 
-def generate_pdf_report(report_id: int) -> Optional[bytes]:
-    """Generate comprehensive clinical PDF report for pathologist review."""
+def generate_pdf_report(report_id: int, lang: str = None) -> Optional[bytes]:
+    """Generate comprehensive clinical PDF report for pathologist review.
+
+    Args:
+        report_id: The ID of the result to generate a report for
+        lang: Language code ('en' for English, 'fr' for French). If None, uses config default.
+
+    Returns:
+        PDF bytes or None if report not found
+    """
     try:
+        # Get language from config if not specified
+        config = load_config()
+        if lang is None:
+            lang = config.get('REPORT_LANGUAGE', 'en')
+
+        # Helper function for translations
+        def t(key: str) -> str:
+            return get_translation(key, lang)
+
         with get_db_connection() as conn:
             query = """
                 SELECT r.id, p.full_name, p.mrn_id, p.age, p.weeks, r.created_at, p.clinical_notes,
@@ -1961,7 +2243,6 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         z_data = json.loads(row['full_z_json']) if row['full_z_json'] else {}
         qc_details = row['qc_details'] if row['qc_details'] else "[]"
         qc_metrics = json.loads(row['qc_metrics_json']) if row.get('qc_metrics_json') else {}
-        config = load_config()
 
         # Check for QC override - if overridden, effective status is PASS
         qc_override = bool(row.get('qc_override'))
@@ -1992,8 +2273,8 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
                                          leading=10, wordWrap='CJK', fontName='Helvetica-Bold')
 
         # ===== HEADER =====
-        story.append(Paragraph("CLINICAL GENETICS LABORATORY", title_style))
-        story.append(Paragraph("Non-Invasive Prenatal Testing (NIPT) Report", subtitle_style))
+        story.append(Paragraph(t('lab_title'), title_style))
+        story.append(Paragraph(t('report_title'), subtitle_style))
         story.append(Spacer(1, 0.15*inch))
 
         # ===== REPORT METADATA =====
@@ -2001,8 +2282,8 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         report_time = row['created_at'][11:19] if len(row['created_at']) > 10 else ''
 
         meta_data = [
-            ['Report ID:', str(row['id']), 'Report Date:', report_date],
-            ['Panel Type:', row['panel_type'], 'Report Time:', report_time],
+            [t('report_id'), str(row['id']), t('report_date'), report_date],
+            [t('panel_type'), row['panel_type'], t('report_time'), report_time],
         ]
         meta_table = Table(meta_data, colWidths=[1.1*inch, 2.2*inch, 1.1*inch, 2.1*inch])
         meta_table.setStyle(TableStyle([
@@ -2016,7 +2297,7 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         story.append(Spacer(1, 0.1*inch))
 
         # ===== PATIENT INFORMATION =====
-        story.append(Paragraph("PATIENT INFORMATION", section_style))
+        story.append(Paragraph(t('patient_info'), section_style))
 
         # Calculate BMI if not present
         bmi_val = row['bmi'] if row['bmi'] else (
@@ -2028,11 +2309,11 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         maternal_risk = get_maternal_age_risk(int(row['age'])) if row['age'] else {}
 
         patient_data = [
-            ['Name:', str(row['full_name']), 'MRN:', str(row['mrn_id'])],
-            ['Maternal Age:', f"{row['age']} years", 'Gestational Age:', f"{row['weeks']} weeks"],
-            ['Weight:', f"{row['weight_kg']} kg" if row['weight_kg'] else 'N/A',
-             'Height:', f"{row['height_cm']} cm" if row['height_cm'] else 'N/A'],
-            ['BMI:', str(bmi_val), '', ''],
+            [t('name'), str(row['full_name']), t('mrn'), str(row['mrn_id'])],
+            [t('maternal_age'), f"{row['age']} {t('years')}", t('gestational_age'), f"{row['weeks']} {t('weeks')}"],
+            [t('weight'), f"{row['weight_kg']} kg" if row['weight_kg'] else 'N/A',
+             t('height'), f"{row['height_cm']} cm" if row['height_cm'] else 'N/A'],
+            [t('bmi'), str(bmi_val), '', ''],
         ]
         patient_table = Table(patient_data, colWidths=[1.1*inch, 2.2*inch, 1.1*inch, 2.1*inch])
         patient_table.setStyle(TableStyle([
@@ -2047,19 +2328,20 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         story.append(Spacer(1, 0.1*inch))
 
         # ===== QUALITY CONTROL METRICS =====
-        story.append(Paragraph("QUALITY CONTROL ASSESSMENT", section_style))
+        story.append(Paragraph(t('qc_assessment'), section_style))
 
         # Determine effective QC status (override takes precedence)
         original_qc_status = row['qc_status'] or 'N/A'
         if qc_override:
-            qc_status = 'PASS'
+            qc_status = t('pass')
             qc_color = colors.HexColor('#27ae60')  # Green for PASS
         else:
-            qc_status = original_qc_status
-            qc_color = colors.HexColor('#27ae60') if qc_status == 'PASS' else (
-                colors.HexColor('#f39c12') if qc_status == 'WARNING' else colors.HexColor('#e74c3c'))
+            qc_status = t('pass') if original_qc_status == 'PASS' else (
+                t('warning') if original_qc_status == 'WARNING' else t('fail'))
+            qc_color = colors.HexColor('#27ae60') if original_qc_status == 'PASS' else (
+                colors.HexColor('#f39c12') if original_qc_status == 'WARNING' else colors.HexColor('#e74c3c'))
 
-        qc_header = [['QC Status', 'Parameter', 'Value', 'Reference Range', 'Status']]
+        qc_header = [[t('qc_status'), t('parameter'), t('value'), t('reference_range'), t('status')]]
         qc_rows = []
 
         # Get thresholds from config
@@ -2102,16 +2384,16 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
 
         # Build QC items with actual values
         qc_items = [
-            ('Fetal Fraction (Cff)', cff_display, f"≥ {thresholds['MIN_CFF']}%", cff_status),
-            ('GC Content', gc_display, f"{thresholds['GC_RANGE'][0]}-{thresholds['GC_RANGE'][1]}%", gc_status),
-            ('Sequencing Reads', reads_display, f"≥ {min_reads}M", reads_status),
-            ('Unique Read Rate', uniq_display, f"≥ {thresholds['MIN_UNIQ_RATE']}%", uniq_status),
-            ('Error Rate', error_display, f"≤ {thresholds['MAX_ERROR_RATE']}%", error_status),
-            ('Quality Score', qs_display, f"< {thresholds['QS_LIMIT_NEG']}", qs_status),
+            (t('fetal_fraction'), cff_display, f"≥ {thresholds['MIN_CFF']}%", cff_status),
+            (t('gc_content'), gc_display, f"{thresholds['GC_RANGE'][0]}-{thresholds['GC_RANGE'][1]}%", gc_status),
+            (t('seq_reads'), reads_display, f"≥ {min_reads}M", reads_status),
+            (t('unique_rate'), uniq_display, f"≥ {thresholds['MIN_UNIQ_RATE']}%", uniq_status),
+            (t('error_rate'), error_display, f"≤ {thresholds['MAX_ERROR_RATE']}%", error_status),
+            (t('quality_score'), qs_display, f"< {thresholds['QS_LIMIT_NEG']}", qs_status),
         ]
 
-        # Display status - add "(Override)" indicator if QC was overridden
-        qc_display_status = f"{qc_status} (Override)" if qc_override else qc_status
+        # Display status - add override indicator if QC was overridden
+        qc_display_status = f"{qc_status} ({t('override')})" if qc_override else qc_status
 
         for i, (param, val, ref, status) in enumerate(qc_items):
             if i == 0:
@@ -2152,29 +2434,31 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
 
         if row['qc_advice'] and row['qc_advice'] != 'None' and not qc_override:
             story.append(Spacer(1, 0.05*inch))
-            story.append(Paragraph(f"<b>QC Recommendation:</b> {row['qc_advice']}", warning_style))
+            story.append(Paragraph(f"<b>{t('qc_recommendation')}</b> {row['qc_advice']}", warning_style))
 
         # Add QC override notice if applicable
         if qc_override:
             story.append(Spacer(1, 0.05*inch))
             override_style = ParagraphStyle('Override', parent=styles['Normal'], fontSize=9,
                                            textColor=colors.HexColor('#1a5276'), fontName='Helvetica-Bold')
-            override_note = f"<b>QC Override Applied:</b> Original status was {original_qc_status}. "
+            orig_status_translated = t('pass') if original_qc_status == 'PASS' else (
+                t('warning') if original_qc_status == 'WARNING' else t('fail'))
+            override_note = f"<b>{t('qc_override_applied')}</b> {t('original_status')} {orig_status_translated}. "
             if qc_override_by:
-                override_note += f"Validated by {qc_override_by}. "
+                override_note += f"{t('validated_by')} {qc_override_by}. "
             if qc_override_reason:
-                override_note += f"Reason: {qc_override_reason}"
+                override_note += f"{t('reason')} {qc_override_reason}"
             story.append(Paragraph(override_note, override_style))
 
         story.append(Spacer(1, 0.1*inch))
 
         # ===== MAIN RESULTS =====
-        story.append(Paragraph("ANEUPLOIDY SCREENING RESULTS", section_style))
+        story.append(Paragraph(t('aneuploidy_results'), section_style))
 
         # Determine fetal sex from SCA result
         sca_result = row['sca_res'] or ''
-        fetal_sex = 'Male' if 'Male' in sca_result or 'XY' in sca_result else (
-            'Female' if 'Female' in sca_result or 'XX' in sca_result else 'Undetermined')
+        fetal_sex = t('male') if 'Male' in sca_result or 'XY' in sca_result else (
+            t('female') if 'Female' in sca_result or 'XX' in sca_result else t('undetermined'))
 
         # Get Z-scores
         z21 = z_data.get('21', z_data.get(21, 'N/A'))
@@ -2198,29 +2482,29 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         sca_reportable, _ = get_reportable_status(str(row['sca_res']), effective_qc_status, qc_override)
 
         results_header = [[
-            Paragraph('<b>Condition</b>', cell_style),
-            Paragraph('<b>Result</b>', cell_style),
-            Paragraph('<b>Z-Score</b>', cell_style),
-            Paragraph('<b>Reportable</b>', cell_style),
-            Paragraph('<b>Ref</b>', cell_style)
+            Paragraph(f"<b>{t('condition')}</b>", cell_style),
+            Paragraph(f"<b>{t('result')}</b>", cell_style),
+            Paragraph(f"<b>{t('z_score')}</b>", cell_style),
+            Paragraph(f"<b>{t('reportable')}</b>", cell_style),
+            Paragraph(f"<b>{t('ref')}</b>", cell_style)
         ]]
         results_rows = [
-            [Paragraph('Trisomy 21 (Down Syndrome)', cell_style),
+            [Paragraph(t('trisomy_21'), cell_style),
              Paragraph(str(row['t21_res']), cell_style),
              Paragraph(fmt_z(z21), cell_style),
              Paragraph(t21_reportable, cell_style),
              Paragraph('Z &lt; 2.58', cell_style)],
-            [Paragraph('Trisomy 18 (Edwards Syndrome)', cell_style),
+            [Paragraph(t('trisomy_18'), cell_style),
              Paragraph(str(row['t18_res']), cell_style),
              Paragraph(fmt_z(z18), cell_style),
              Paragraph(t18_reportable, cell_style),
              Paragraph('Z &lt; 2.58', cell_style)],
-            [Paragraph('Trisomy 13 (Patau Syndrome)', cell_style),
+            [Paragraph(t('trisomy_13'), cell_style),
              Paragraph(str(row['t13_res']), cell_style),
              Paragraph(fmt_z(z13), cell_style),
              Paragraph(t13_reportable, cell_style),
              Paragraph('Z &lt; 2.58', cell_style)],
-            [Paragraph('Sex Chromosome Aneuploidy', cell_style),
+            [Paragraph(t('sca'), cell_style),
              Paragraph(str(row['sca_res']), cell_style),
              Paragraph(f"XX:{fmt_z(z_xx)} XY:{fmt_z(z_xy)}", cell_style),
              Paragraph(sca_reportable, cell_style),
@@ -2257,14 +2541,14 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         story.append(Spacer(1, 0.08*inch))
 
         # Fetal Sex
-        story.append(Paragraph(f"<b>Fetal Sex:</b> {fetal_sex}", styles['Normal']))
+        story.append(Paragraph(f"<b>{t('fetal_sex')}</b> {fetal_sex}", styles['Normal']))
         story.append(Spacer(1, 0.1*inch))
 
         # ===== CNV FINDINGS =====
         if cnvs and len(cnvs) > 0:
-            story.append(Paragraph("COPY NUMBER VARIATION (CNV) FINDINGS", section_style))
-            cnv_header = [[Paragraph('<b>Finding</b>', cell_style), Paragraph('<b>Clinical Significance</b>', cell_style)]]
-            cnv_rows = [[Paragraph(str(cnv), cell_style), Paragraph(get_clinical_recommendation(str(cnv), 'CNV'), cell_style)] for cnv in cnvs]
+            story.append(Paragraph(t('cnv_findings'), section_style))
+            cnv_header = [[Paragraph(f"<b>{t('finding')}</b>", cell_style), Paragraph(f"<b>{t('clinical_significance')}</b>", cell_style)]]
+            cnv_rows = [[Paragraph(str(cnv), cell_style), Paragraph(t('rec_cnv_positive'), cell_style)] for cnv in cnvs]
             cnv_data = cnv_header + cnv_rows
             cnv_table = Table(cnv_data, colWidths=[2.5*inch, 4*inch])
             cnv_table.setStyle(TableStyle([
@@ -2280,9 +2564,9 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
 
         # ===== RAT FINDINGS =====
         if rats and len(rats) > 0:
-            story.append(Paragraph("RARE AUTOSOMAL TRISOMY (RAT) FINDINGS", section_style))
-            rat_header = [[Paragraph('<b>Finding</b>', cell_style), Paragraph('<b>Clinical Significance</b>', cell_style)]]
-            rat_rows = [[Paragraph(str(rat), cell_style), Paragraph(get_clinical_recommendation(str(rat), 'RAT'), cell_style)] for rat in rats]
+            story.append(Paragraph(t('rat_findings'), section_style))
+            rat_header = [[Paragraph(f"<b>{t('finding')}</b>", cell_style), Paragraph(f"<b>{t('clinical_significance')}</b>", cell_style)]]
+            rat_rows = [[Paragraph(str(rat), cell_style), Paragraph(t('rec_rat_positive'), cell_style)] for rat in rats]
             rat_data = rat_header + rat_rows
             rat_table = Table(rat_data, colWidths=[2.5*inch, 4*inch])
             rat_table.setStyle(TableStyle([
@@ -2297,45 +2581,47 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
             story.append(Spacer(1, 0.1*inch))
 
         # ===== MATERNAL FACTORS & AGE-BASED RISK =====
-        story.append(Paragraph("MATERNAL FACTORS & AGE-BASED RISK", section_style))
+        story.append(Paragraph(t('maternal_factors'), section_style))
 
         # Build maternal factors text
-        maternal_factors = []
+        maternal_factors_list = []
         if row['age']:
-            maternal_factors.append(f"<b>Maternal Age:</b> {row['age']} years")
+            maternal_factors_list.append(f"<b>{t('maternal_age')}</b> {row['age']} {t('years')}")
         if bmi_val and bmi_val != 'N/A':
             bmi_category = ""
             try:
                 bmi_num = float(bmi_val)
                 if bmi_num < 18.5:
-                    bmi_category = " (Underweight)"
+                    bmi_category = f" {t('bmi_underweight')}"
                 elif bmi_num < 25:
-                    bmi_category = " (Normal)"
+                    bmi_category = f" {t('bmi_normal')}"
                 elif bmi_num < 30:
-                    bmi_category = " (Overweight)"
+                    bmi_category = f" {t('bmi_overweight')}"
                 else:
-                    bmi_category = " (Obese - may affect fetal fraction)"
+                    bmi_category = f" {t('bmi_obese')}"
             except:
                 pass
-            maternal_factors.append(f"<b>BMI:</b> {bmi_val}{bmi_category}")
+            maternal_factors_list.append(f"<b>{t('bmi')}</b> {bmi_val}{bmi_category}")
         if row['weeks']:
-            maternal_factors.append(f"<b>Gestational Age:</b> {row['weeks']} weeks")
+            maternal_factors_list.append(f"<b>{t('gestational_age')}</b> {row['weeks']} {t('weeks')}")
 
-        if maternal_factors:
-            story.append(Paragraph(" | ".join(maternal_factors), styles['Normal']))
+        if maternal_factors_list:
+            story.append(Paragraph(" | ".join(maternal_factors_list), styles['Normal']))
             story.append(Spacer(1, 0.05*inch))
 
         # Age-based prior risk
         if maternal_risk and row['age']:
-            risk_text = (f"Based on maternal age of {row['age']} years, the a priori risks are: "
-                        f"Trisomy 21: 1 in {int(1/maternal_risk['T21'])}, "
-                        f"Trisomy 18: 1 in {int(1/maternal_risk['T18'])}, "
-                        f"Trisomy 13: 1 in {int(1/maternal_risk['T13'])}")
+            risk_text = t('age_risk_text').format(
+                age=row['age'],
+                t21=int(1/maternal_risk['T21']),
+                t18=int(1/maternal_risk['T18']),
+                t13=int(1/maternal_risk['T13'])
+            )
             story.append(Paragraph(risk_text, small_style))
         story.append(Spacer(1, 0.1*inch))
 
         # ===== FINAL INTERPRETATION =====
-        story.append(Paragraph("FINAL INTERPRETATION", section_style))
+        story.append(Paragraph(t('final_interpretation'), section_style))
 
         final_summary = row['final_summary']
         final_color = colors.HexColor('#27ae60') if 'NEGATIVE' in str(final_summary).upper() else (
@@ -2357,21 +2643,21 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         story.append(Spacer(1, 0.1*inch))
 
         # ===== CLINICAL RECOMMENDATIONS =====
-        story.append(Paragraph("CLINICAL RECOMMENDATIONS", section_style))
+        story.append(Paragraph(t('clinical_recommendations'), section_style))
 
         recommendations = []
         if 'POSITIVE' in str(row['t21_res']).upper():
-            recommendations.append(f"• Trisomy 21: {get_clinical_recommendation(row['t21_res'], 'T21')}")
+            recommendations.append(f"• {t('trisomy_21').split(' (')[0]}: {t('rec_t21_positive')}")
         if 'POSITIVE' in str(row['t18_res']).upper():
-            recommendations.append(f"• Trisomy 18: {get_clinical_recommendation(row['t18_res'], 'T18')}")
+            recommendations.append(f"• {t('trisomy_18').split(' (')[0]}: {t('rec_t18_positive')}")
         if 'POSITIVE' in str(row['t13_res']).upper():
-            recommendations.append(f"• Trisomy 13: {get_clinical_recommendation(row['t13_res'], 'T13')}")
+            recommendations.append(f"• {t('trisomy_13').split(' (')[0]}: {t('rec_t13_positive')}")
         if 'POSITIVE' in str(row['sca_res']).upper():
-            recommendations.append(f"• SCA: {get_clinical_recommendation(row['sca_res'], 'SCA')}")
+            recommendations.append(f"• {t('sca')}: {t('rec_sca_positive')}")
 
         if not recommendations:
-            recommendations.append("• No high-risk findings detected. Continue standard prenatal care.")
-            recommendations.append("• NIPT is a screening test. It does not diagnose chromosomal abnormalities.")
+            recommendations.append(f"• {t('no_high_risk')}")
+            recommendations.append(f"• {t('nipt_screening')}")
 
         for rec in recommendations:
             story.append(Paragraph(rec, styles['Normal']))
@@ -2379,7 +2665,7 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
 
         # ===== CLINICAL NOTES =====
         if row['clinical_notes']:
-            story.append(Paragraph("CLINICAL NOTES & OBSERVATIONS", section_style))
+            story.append(Paragraph(t('clinical_notes'), section_style))
             notes_text = str(row['clinical_notes'])
             # Create a styled box for clinical notes
             notes_style = ParagraphStyle('Notes', parent=styles['Normal'], fontSize=9,
@@ -2399,46 +2685,46 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
             key_markers = []
             notes_lower = notes_text.lower()
             if 'nuchal' in notes_lower or 'nt' in notes_lower:
-                key_markers.append("Nuchal Translucency noted")
+                key_markers.append(t('nt_noted'))
             if 'fetal fraction' in notes_lower or 'ff' in notes_lower:
-                key_markers.append("Fetal Fraction concerns noted")
+                key_markers.append(t('ff_concerns'))
             if 'ivf' in notes_lower or 'icsi' in notes_lower:
-                key_markers.append("ART/IVF conception noted")
+                key_markers.append(t('ivf_noted'))
             if 'twin' in notes_lower or 'multiple' in notes_lower:
-                key_markers.append("Multiple gestation noted")
+                key_markers.append(t('multiple_noted'))
 
             if key_markers:
                 story.append(Spacer(1, 0.05*inch))
-                markers_text = "<i>Key clinical markers: " + ", ".join(key_markers) + "</i>"
+                markers_text = f"<i>{t('key_markers')} " + ", ".join(key_markers) + "</i>"
                 story.append(Paragraph(markers_text, small_style))
 
             story.append(Spacer(1, 0.1*inch))
 
         # ===== LIMITATIONS & DISCLAIMER =====
-        story.append(Paragraph("LIMITATIONS AND DISCLAIMER", section_style))
-        disclaimer_text = """
-        <b>Important Information:</b><br/>
-        • NIPT is a screening test, not a diagnostic test. Positive results should be confirmed with diagnostic testing (amniocentesis or CVS).<br/>
-        • False positive and false negative results can occur. A negative result does not eliminate the possibility of chromosomal abnormalities.<br/>
-        • This test screens for specific chromosomal conditions and does not detect all genetic disorders.<br/>
-        • Results should be interpreted in conjunction with other clinical findings, ultrasound, and maternal history.<br/>
-        • Test performance may be affected by factors including: low fetal fraction, maternal chromosomal abnormalities, confined placental mosaicism, vanishing twin, or maternal malignancy.<br/>
-        • Genetic counseling is recommended for all patients, especially those with positive or inconclusive results.
+        story.append(Paragraph(t('limitations'), section_style))
+        disclaimer_text = f"""
+        <b>{t('important_info')}</b><br/>
+        • {t('disclaimer_1')}<br/>
+        • {t('disclaimer_2')}<br/>
+        • {t('disclaimer_3')}<br/>
+        • {t('disclaimer_4')}<br/>
+        • {t('disclaimer_5')}<br/>
+        • {t('disclaimer_6')}
         """
         story.append(Paragraph(disclaimer_text, small_style))
         story.append(Spacer(1, 0.15*inch))
 
         # ===== SIGNATURE SECTION =====
-        story.append(Paragraph("AUTHORIZATION", section_style))
+        story.append(Paragraph(t('authorization'), section_style))
 
         sig_data = [
-            ['Performed by:', row['technician_name'] or 'Laboratory Staff', 'Date:', report_date],
+            [t('performed_by'), row['technician_name'] or t('lab_staff'), t('date'), report_date],
             ['', '', '', ''],
-            ['Reviewed by:', '_' * 30, 'Date:', '_' * 15],
-            ['Clinical Pathologist', '', '', ''],
+            [t('reviewed_by'), '_' * 30, t('date'), '_' * 15],
+            [t('clinical_pathologist'), '', '', ''],
             ['', '', '', ''],
-            ['Approved by:', '_' * 30, 'Date:', '_' * 15],
-            ['Laboratory Director', '', '', ''],
+            [t('approved_by'), '_' * 30, t('date'), '_' * 15],
+            [t('lab_director'), '', '', ''],
         ]
         sig_table = Table(sig_data, colWidths=[1.2*inch, 2.3*inch, 0.8*inch, 2.2*inch])
         sig_table.setStyle(TableStyle([
@@ -2455,7 +2741,7 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
 
         # ===== FOOTER =====
         story.append(Spacer(1, 0.2*inch))
-        footer_text = f"Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | NRIS v2.0 Enhanced Edition"
+        footer_text = f"{t('report_generated')} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {t('version')}"
         story.append(Paragraph(footer_text, small_style))
 
         doc.build(story)
@@ -2770,32 +3056,35 @@ def main():
     # TAB 1: ANALYSIS
     with tabs[0]:
         st.title("🧬 NIPT Analysis")
-        
+        st.caption("Enter patient information and sequencing data to generate analysis results")
+
         with st.container():
+            st.markdown("##### Patient Information")
             c1, c2, c3 = st.columns(3)
-            p_name = c1.text_input("Patient Name")
-            p_id = c2.text_input("MRN")
-            p_age = c3.number_input("Age", 15, 60, 30)
-            
+            p_name = c1.text_input("Patient Name", help="Full name of the patient")
+            p_id = c2.text_input("MRN", help="Medical Record Number - unique patient identifier")
+            p_age = c3.number_input("Maternal Age", 15, 60, 30, help="Patient's age in years")
+
             c4, c5, c6, c7 = st.columns(4)
-            p_weight = c4.number_input("Weight (kg)", 0.0, 200.0, 65.0)
-            p_height = c5.number_input("Height (cm)", 0, 250, 165)
+            p_weight = c4.number_input("Weight (kg)", 0.0, 200.0, 65.0, help="Patient weight for BMI calculation")
+            p_height = c5.number_input("Height (cm)", 0, 250, 165, help="Patient height for BMI calculation")
             bmi = round(p_weight / ((p_height/100)**2), 2) if p_height > 0 else 0
-            c6.metric("BMI", f"{bmi:.1f}" if bmi > 0 else "--")
-            p_weeks = c7.number_input("Weeks", 0, 42, 12)
-            p_notes = st.text_area("Notes", height=60)
+            c6.metric("BMI", f"{bmi:.1f}" if bmi > 0 else "--", help="Calculated Body Mass Index")
+            p_weeks = c7.number_input("Gestational Weeks", 0, 42, 12, help="Weeks of gestation (typically 10-22 weeks for NIPT)")
+            p_notes = st.text_area("Clinical Notes", height=60, help="Optional notes about the patient or test conditions (e.g., IVF, twins, previous results)")
         
         st.markdown("---")
         
         st.subheader("Sequencing Metrics")
-        panel_type = st.selectbox("Panel", list(config['PANEL_READ_LIMITS'].keys()))
+        panel_type = st.selectbox("Panel Type", list(config['PANEL_READ_LIMITS'].keys()),
+                                  help="Select the NIPT panel used for this test")
         m1, m2, m3, m4, m5, m6 = st.columns(6)
-        reads = m1.number_input("Reads (M)", 0.0, 100.0, 8.0)
-        cff = m2.number_input("Cff %", 0.0, 50.0, 10.0)
-        gc = m3.number_input("GC %", 0.0, 100.0, 40.0)
-        qs = m4.number_input("QS", 0.0, 10.0, 1.0)
-        uniq_rate = m5.number_input("Unique %", 0.0, 100.0, 75.0)
-        error_rate = m6.number_input("Error %", 0.0, 5.0, 0.1)
+        reads = m1.number_input("Reads (M)", 0.0, 100.0, 8.0, help="Total sequencing reads in millions")
+        cff = m2.number_input("Cff %", 0.0, 50.0, 10.0, help="Cell-free fetal DNA fraction (must be >= 3.5%)")
+        gc = m3.number_input("GC %", 0.0, 100.0, 40.0, help="GC content percentage (normal: 37-44%)")
+        qs = m4.number_input("QS", 0.0, 10.0, 1.0, help="Quality Score (lower is better, < 1.7 for negative)")
+        uniq_rate = m5.number_input("Unique %", 0.0, 100.0, 75.0, help="Unique read rate (must be >= 68%)")
+        error_rate = m6.number_input("Error %", 0.0, 5.0, 0.1, help="Sequencing error rate (must be <= 1%)")
         
         # Validation
         val_errors = validate_inputs(reads, cff, gc, p_age)
@@ -2808,16 +3097,19 @@ def main():
         c_tri, c_sca = st.columns(2)
         with c_tri:
             st.subheader("Trisomy Z-Scores")
-            z21 = st.number_input("Z-21", -10.0, 50.0, 0.5)
-            z18 = st.number_input("Z-18", -10.0, 50.0, 0.5)
-            z13 = st.number_input("Z-13", -10.0, 50.0, 0.5)
-        
+            st.caption("Z < 2.58 = Low Risk | Z >= 2.58 = High Risk")
+            z21 = st.number_input("Z-21 (Chr 21)", -10.0, 50.0, 0.5, help="Z-score for Trisomy 21 (Down Syndrome)")
+            z18 = st.number_input("Z-18 (Chr 18)", -10.0, 50.0, 0.5, help="Z-score for Trisomy 18 (Edwards Syndrome)")
+            z13 = st.number_input("Z-13 (Chr 13)", -10.0, 50.0, 0.5, help="Z-score for Trisomy 13 (Patau Syndrome)")
+
         with c_sca:
             st.subheader("Sex Chromosomes")
-            sca_type = st.selectbox("Type", ["XX", "XY", "XO", "XXX", "XXY", "XYY", "XXX+XY", "XO+XY"])
+            st.caption("Select detected SCA type and enter Z-scores")
+            sca_type = st.selectbox("SCA Type", ["XX", "XY", "XO", "XXX", "XXY", "XYY", "XXX+XY", "XO+XY"],
+                                   help="XX=Female, XY=Male, others indicate sex chromosome aneuploidy")
             z1, z2 = st.columns(2)
-            z_xx = z1.number_input("Z-XX", -10.0, 50.0, 0.0)
-            z_xy = z2.number_input("Z-XY", -10.0, 50.0, 0.0)
+            z_xx = z1.number_input("Z-XX", -10.0, 50.0, 0.0, help="Z-score for X chromosome")
+            z_xy = z2.number_input("Z-XY", -10.0, 50.0, 0.0, help="Z-score for Y chromosome")
         
         st.markdown("---")
         
@@ -2998,13 +3290,22 @@ def main():
             st.info(f"📋 FINAL: {res['final']}")
 
             if st.session_state.last_report_id:
-                col_a, col_b = st.columns(2)
+                col_a, col_b, col_c = st.columns([1, 1, 1])
                 with col_a:
-                    pdf_data = generate_pdf_report(st.session_state.last_report_id)
-                    if pdf_data:
-                        st.download_button("📄 Download PDF", pdf_data, 
-                                         f"Report_{st.session_state.last_report_id}.pdf", "application/pdf")
+                    analysis_pdf_lang = st.selectbox(
+                        "PDF Language",
+                        options=["English", "Francais"],
+                        index=0 if config.get('REPORT_LANGUAGE', 'en') == 'en' else 1,
+                        key="analysis_pdf_lang"
+                    )
                 with col_b:
+                    analysis_lang_code = 'en' if analysis_pdf_lang == "English" else 'fr'
+                    pdf_data = generate_pdf_report(st.session_state.last_report_id, lang=analysis_lang_code)
+                    if pdf_data:
+                        lang_suffix = "_FR" if analysis_lang_code == 'fr' else "_EN"
+                        st.download_button("📄 Download PDF", pdf_data,
+                                         f"Report_{st.session_state.last_report_id}{lang_suffix}.pdf", "application/pdf")
+                with col_c:
                     if st.button("🔄 New Analysis"):
                         st.session_state.analysis_complete = False
                         st.rerun()
@@ -3157,11 +3458,20 @@ def main():
             with col_pdf:
                 with st.expander("📄 Generate PDF"):
                     pdf_id = st.number_input("Report ID", 1, key="pdf_input")
+                    pdf_lang = st.selectbox(
+                        "Report Language",
+                        options=["English", "Francais"],
+                        index=0 if config.get('REPORT_LANGUAGE', 'en') == 'en' else 1,
+                        key="pdf_lang_registry",
+                        help="Select the language for the PDF report"
+                    )
+                    lang_code = 'en' if pdf_lang == "English" else 'fr'
                     if st.button("Generate"):
-                        pdf_data = generate_pdf_report(pdf_id)
+                        pdf_data = generate_pdf_report(pdf_id, lang=lang_code)
                         if pdf_data:
+                            lang_suffix = "_FR" if lang_code == 'fr' else "_EN"
                             st.download_button("Download PDF", pdf_data,
-                                             f"Report_{pdf_id}.pdf", "application/pdf")
+                                             f"Report_{pdf_id}{lang_suffix}.pdf", "application/pdf")
                         else:
                             st.error("Report not found")
 
@@ -4101,14 +4411,45 @@ def main():
                 
                 if save_config(new_config):
                     st.success("✅ Configuration saved")
-                    log_audit("CONFIG_UPDATE", "Updated thresholds", 
+                    log_audit("CONFIG_UPDATE", "Updated thresholds",
                              st.session_state.user['id'])
                     st.rerun()
                 else:
                     st.error("Failed to save")
-        
+
         st.divider()
-        
+
+        st.subheader("Report Settings")
+
+        st.markdown("**PDF Report Language**")
+        st.markdown("Select the default language for generated PDF reports.")
+
+        # Language options
+        language_options = {"English": "en", "Francais": "fr"}
+        current_lang = config.get('REPORT_LANGUAGE', 'en')
+        current_lang_display = "English" if current_lang == 'en' else "Francais"
+
+        selected_lang_display = st.selectbox(
+            "Default Report Language",
+            options=list(language_options.keys()),
+            index=list(language_options.keys()).index(current_lang_display),
+            help="This sets the default language for PDF reports. You can also choose a different language when generating individual reports."
+        )
+
+        if language_options[selected_lang_display] != current_lang:
+            if st.button("Save Language Preference"):
+                new_config = config.copy()
+                new_config['REPORT_LANGUAGE'] = language_options[selected_lang_display]
+                if save_config(new_config):
+                    st.success(f"✅ Report language set to {selected_lang_display}")
+                    log_audit("CONFIG_UPDATE", f"Changed report language to {selected_lang_display}",
+                             st.session_state.user['id'])
+                    st.rerun()
+                else:
+                    st.error("Failed to save language preference")
+
+        st.divider()
+
         st.subheader("User Management")
 
         # Password Change Section (available to all users)
