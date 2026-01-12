@@ -1,12 +1,14 @@
 @echo off
-setlocal
-title NRIS v2.0 Enhanced Launcher
+setlocal EnableDelayedExpansion
+title NRIS v2.2 - Starting...
 
-echo ===================================================
-echo   NIPT RESULT INTERPRETATION SYSTEM v2.0
-echo   Enhanced Edition with Authentication ^& Analytics
-echo ===================================================
-echo.
+:: ===================================================
+::   NIPT RESULT INTERPRETATION SYSTEM v2.2
+::   Enhanced Edition - Easy Launch Script
+:: ===================================================
+
+:: Change to script directory (allows running from shortcuts)
+cd /d "%~dp0"
 
 :: 0. CHECK FOR PROGRAM FILE
 if not exist "NRIS_Enhanced.py" (
@@ -63,35 +65,47 @@ if exist "requirements_NRIS_v2.txt" (
     if %errorlevel% neq 0 (
         echo [WARN] Some dependencies may have failed to install
         echo Trying individual installation...
-        pip install streamlit pandas plotly reportlab openpyxl xlsxwriter
+        pip install streamlit pandas plotly reportlab openpyxl xlsxwriter PyPDF2
     )
     echo [OK] Dependencies ready
 ) else (
     echo.
     echo [WARN] requirements_NRIS_v2.txt not found!
     echo Installing core dependencies manually...
-    pip install streamlit pandas plotly reportlab openpyxl xlsxwriter
+    pip install streamlit pandas plotly reportlab openpyxl xlsxwriter PyPDF2
 )
 
-:: 5. LAUNCH NRIS v2.0
+:: 5. SET PORT
+set PORT=8501
+
+:: 6. OPEN BROWSER AUTOMATICALLY (before server starts, with delay)
+echo.
+echo [INFO] Opening browser in 5 seconds...
+start "" cmd /c "timeout /t 5 /nobreak >nul && start http://localhost:%PORT%"
+
+:: 7. UPDATE WINDOW TITLE TO SHOW RUNNING STATUS
+title NRIS v2.2 - Running on http://localhost:%PORT%
+
+:: 8. LAUNCH NRIS
 echo.
 echo ===================================================
-echo [SUCCESS] Launching NRIS v2.0 Enhanced Edition...
+echo   NRIS v2.2 Enhanced Edition
 echo ===================================================
 echo.
-echo Default Login Credentials:
-echo   Username: admin
-echo   Password: admin123
+echo   Application URL: http://localhost:%PORT%
+echo   (Browser should open automatically)
 echo.
-echo IMPORTANT: Change default password after first login!
+echo   Default Login:
+echo     Username: admin
+echo     Password: admin123
 echo.
-echo The application will open in your default web browser.
-echo Close this window to stop the application.
+echo   IMPORTANT: Change default password on first login!
 echo.
+echo   To stop: Close this window or press Ctrl+C
 echo ===================================================
 echo.
 
-streamlit run NRIS_Enhanced.py --server.headless true --server.port 8501
+streamlit run NRIS_Enhanced.py --server.headless true --server.port %PORT% --browser.gatherUsageStats false
 
 :: Keep window open if error occurs
 if %errorlevel% neq 0 (
