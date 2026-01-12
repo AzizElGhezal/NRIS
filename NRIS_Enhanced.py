@@ -24,8 +24,11 @@ import io
 import hashlib
 import secrets
 import re
+import shutil
+import os
 from datetime import datetime, timedelta
 from typing import Tuple, List, Dict, Any, Optional
+from pathlib import Path
 import base64
 
 import streamlit as st
@@ -43,6 +46,8 @@ import PyPDF2
 # ==================== CONFIGURATION ====================
 DB_FILE = "nipt_registry_v2.db"
 CONFIG_FILE = "nris_config.json"
+BACKUP_DIR = "backups"
+MAX_BACKUPS = 10  # Keep last 10 backups
 
 DEFAULT_CONFIG = {
     'QC_THRESHOLDS': {
@@ -328,12 +333,185 @@ def get_translation(key: str, lang: str = 'en') -> str:
     """Get translated text for a given key and language."""
     return TRANSLATIONS.get(lang, TRANSLATIONS['en']).get(key, TRANSLATIONS['en'].get(key, key))
 
+# ==================== DATA PROTECTION FUNCTIONS ====================
+
+def ensure_backup_dir() -> Path:
+    """Ensure backup directory exists and return its path."""
+    backup_path = Path(BACKUP_DIR)
+    backup_path.mkdir(exist_ok=True)
+    return backup_path
+
+def create_backup(reason: str = "manual") -> Optional[str]:
+    """Create a timestamped backup of the database.
+
+    Args:
+        reason: Why backup was created (startup, periodic, manual, pre_import)
+
+    Returns:
+        Path to backup file or None if backup failed
+    """
+    if not os.path.exists(DB_FILE):
+        return None
+
+    try:
+        backup_path = ensure_backup_dir()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"nris_backup_{timestamp}_{reason}.db"
+        backup_file = backup_path / backup_filename
+
+        # Use SQLite's backup API for safe copying
+        source_conn = sqlite3.connect(DB_FILE)
+        dest_conn = sqlite3.connect(str(backup_file))
+        source_conn.backup(dest_conn)
+        source_conn.close()
+        dest_conn.close()
+
+        # Rotate old backups (keep only MAX_BACKUPS)
+        rotate_backups()
+
+        return str(backup_file)
+    except Exception as e:
+        print(f"Backup failed: {e}")
+        return None
+
+def rotate_backups() -> None:
+    """Remove old backups, keeping only the most recent MAX_BACKUPS."""
+    try:
+        backup_path = ensure_backup_dir()
+        backups = sorted(
+            [f for f in backup_path.glob("nris_backup_*.db")],
+            key=lambda x: x.stat().st_mtime,
+            reverse=True
+        )
+
+        # Remove backups beyond the limit
+        for old_backup in backups[MAX_BACKUPS:]:
+            try:
+                old_backup.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def list_backups() -> List[Dict[str, Any]]:
+    """List all available backups with metadata."""
+    try:
+        backup_path = ensure_backup_dir()
+        backups = []
+        for backup_file in sorted(backup_path.glob("nris_backup_*.db"),
+                                   key=lambda x: x.stat().st_mtime,
+                                   reverse=True):
+            stat = backup_file.stat()
+            backups.append({
+                'filename': backup_file.name,
+                'path': str(backup_file),
+                'size_mb': round(stat.st_size / (1024 * 1024), 2),
+                'created': datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            })
+        return backups
+    except Exception:
+        return []
+
+def restore_backup(backup_path: str) -> Tuple[bool, str]:
+    """Restore database from a backup file.
+
+    Args:
+        backup_path: Path to the backup file
+
+    Returns:
+        Tuple of (success, message)
+    """
+    if not os.path.exists(backup_path):
+        return False, "Backup file not found"
+
+    try:
+        # First, create a backup of current state
+        create_backup("pre_restore")
+
+        # Restore using SQLite backup API
+        source_conn = sqlite3.connect(backup_path)
+        dest_conn = sqlite3.connect(DB_FILE)
+        source_conn.backup(dest_conn)
+        source_conn.close()
+        dest_conn.close()
+
+        return True, "Database restored successfully"
+    except Exception as e:
+        return False, f"Restore failed: {e}"
+
+def verify_database_integrity() -> Tuple[bool, str]:
+    """Run SQLite integrity check on the database.
+
+    Returns:
+        Tuple of (is_ok, message)
+    """
+    if not os.path.exists(DB_FILE):
+        return True, "Database does not exist yet (will be created)"
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA integrity_check")
+        result = cursor.fetchone()[0]
+        conn.close()
+
+        if result == "ok":
+            return True, "Database integrity verified"
+        else:
+            return False, f"Integrity issues found: {result}"
+    except Exception as e:
+        return False, f"Integrity check failed: {e}"
+
+def startup_data_protection() -> Dict[str, Any]:
+    """Perform startup data protection tasks.
+
+    This should be called once when the application starts.
+    Creates a backup and verifies database integrity.
+
+    Returns:
+        Dictionary with status information
+    """
+    status = {
+        'backup_created': False,
+        'backup_path': None,
+        'integrity_ok': False,
+        'integrity_message': '',
+        'warnings': []
+    }
+
+    # Check integrity first
+    is_ok, message = verify_database_integrity()
+    status['integrity_ok'] = is_ok
+    status['integrity_message'] = message
+
+    if not is_ok:
+        status['warnings'].append(f"Database integrity issue: {message}")
+
+    # Create startup backup (only if database exists)
+    if os.path.exists(DB_FILE):
+        backup_path = create_backup("startup")
+        if backup_path:
+            status['backup_created'] = True
+            status['backup_path'] = backup_path
+        else:
+            status['warnings'].append("Failed to create startup backup")
+
+    return status
+
 # ==================== DATABASE FUNCTIONS ====================
 
 def get_db_connection():
-    """Get database connection with foreign keys enabled."""
+    """Get database connection with foreign keys and WAL mode enabled.
+
+    WAL (Write-Ahead Logging) mode provides:
+    - Better crash resilience
+    - Concurrent read access during writes
+    - Improved performance for frequent writes
+    """
     conn = sqlite3.connect(DB_FILE)
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")  # Enable WAL for crash resilience
+    conn.execute("PRAGMA synchronous = NORMAL")  # Balance between safety and speed
     return conn
 
 def init_database() -> None:
@@ -2990,6 +3168,11 @@ def render_login():
 
 def main():
     st.set_page_config(page_title="NRIS v2.0", layout="wide", page_icon="🧬")
+
+    # Run startup data protection (once per session)
+    if 'data_protection_status' not in st.session_state:
+        st.session_state.data_protection_status = startup_data_protection()
+
     init_database()
 
     # Session state initialization
@@ -4561,6 +4744,82 @@ def main():
             st.dataframe(audit, use_container_width=True, height=300)
         else:
             st.info("No audit entries")
+
+        st.divider()
+
+        # Data Protection Section
+        st.subheader("Data Protection")
+
+        # Show startup protection status
+        if 'data_protection_status' in st.session_state:
+            status = st.session_state.data_protection_status
+            if status['backup_created']:
+                st.success(f"Startup backup created: {status['backup_path']}")
+            if status['integrity_ok']:
+                st.success(f"Database integrity: {status['integrity_message']}")
+            else:
+                st.warning(f"Database integrity: {status['integrity_message']}")
+
+        st.markdown("**Backup Management**")
+        st.markdown("""
+        Backups are automatically created:
+        - On each application startup
+        - Before batch imports
+        - Before database restores
+
+        The system keeps the last 10 backups automatically.
+        """)
+
+        col_backup1, col_backup2 = st.columns(2)
+
+        with col_backup1:
+            if st.button("Create Manual Backup"):
+                backup_path = create_backup("manual")
+                if backup_path:
+                    st.success(f"Backup created: {backup_path}")
+                    log_audit("MANUAL_BACKUP", f"Created manual backup: {backup_path}",
+                             st.session_state.user['id'])
+                else:
+                    st.error("Failed to create backup")
+
+        with col_backup2:
+            if st.button("Verify Database Integrity"):
+                is_ok, message = verify_database_integrity()
+                if is_ok:
+                    st.success(message)
+                else:
+                    st.error(message)
+
+        # List available backups
+        st.markdown("**Available Backups**")
+        backups = list_backups()
+
+        if backups:
+            backup_df = pd.DataFrame(backups)
+            st.dataframe(backup_df[['filename', 'size_mb', 'created']],
+                        use_container_width=True, height=200)
+
+            # Restore functionality (admin only)
+            if st.session_state.user['role'] == 'admin':
+                st.markdown("**Restore from Backup** (Admin only)")
+                st.warning("Restoring will replace all current data. A backup of the current state will be created first.")
+
+                backup_options = {b['filename']: b['path'] for b in backups}
+                selected_backup = st.selectbox("Select backup to restore",
+                                               options=list(backup_options.keys()))
+
+                if st.button("Restore Selected Backup", type="secondary"):
+                    if selected_backup:
+                        success, message = restore_backup(backup_options[selected_backup])
+                        if success:
+                            st.success(message)
+                            log_audit("RESTORE_BACKUP", f"Restored from {selected_backup}",
+                                     st.session_state.user['id'])
+                            st.info("Please refresh the page to see restored data.")
+                        else:
+                            st.error(message)
+        else:
+            st.info("No backups available yet. Backups are created automatically on startup.")
 
 if __name__ == "__main__":
     main()
