@@ -856,6 +856,65 @@ def update_patient(patient_id: int, data: Dict) -> Tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
+def update_result(result_id: int, data: Dict, user_id: int) -> Tuple[bool, str]:
+    """Update test result information including z-scores, QC metrics, and clinical results."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+                UPDATE results
+                SET panel_type = ?, qc_status = ?, qc_details = ?, qc_advice = ?,
+                    qc_metrics_json = ?, t21_res = ?, t18_res = ?, t13_res = ?, sca_res = ?,
+                    cnv_json = ?, rat_json = ?, full_z_json = ?, final_summary = ?
+                WHERE id = ?
+            """, (
+                data['panel_type'], data['qc_status'], data['qc_details'], data['qc_advice'],
+                json.dumps(data['qc_metrics']), data['t21_res'], data['t18_res'], data['t13_res'],
+                data['sca_res'], json.dumps(data['cnv_list']), json.dumps(data['rat_list']),
+                json.dumps(data['full_z']), data['final_summary'], result_id
+            ))
+            conn.commit()
+            log_audit("UPDATE_RESULT", f"Updated result {result_id}", user_id)
+            return True, "Result updated successfully"
+    except Exception as e:
+        return False, str(e)
+
+def get_result_details(result_id: int) -> Optional[Dict]:
+    """Get full result details for editing."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT id, patient_id, panel_type, qc_status, qc_details, qc_advice,
+                       qc_metrics_json, t21_res, t18_res, t13_res, sca_res,
+                       cnv_json, rat_json, full_z_json, final_summary, created_at
+                FROM results
+                WHERE id = ?
+            """, (result_id,))
+            row = c.fetchone()
+            if row:
+                return {
+                    'id': row[0],
+                    'patient_id': row[1],
+                    'panel_type': row[2],
+                    'qc_status': row[3],
+                    'qc_details': row[4],
+                    'qc_advice': row[5],
+                    'qc_metrics': json.loads(row[6]) if row[6] else {},
+                    't21_res': row[7],
+                    't18_res': row[8],
+                    't13_res': row[9],
+                    'sca_res': row[10],
+                    'cnv_list': json.loads(row[11]) if row[11] else [],
+                    'rat_list': json.loads(row[12]) if row[12] else [],
+                    'full_z': json.loads(row[13]) if row[13] else {},
+                    'final_summary': row[14],
+                    'created_at': row[15]
+                }
+    except Exception:
+        pass
+    return None
+
 def get_patient_details(patient_id: int) -> Optional[Dict]:
     """Get full patient details including all results (excluding deleted patients)."""
     try:
@@ -3115,8 +3174,8 @@ def main():
                                     else:
                                         st.error(f"❌ Failed to update: {message}")
 
-                        # Show patient's test results
-                        with st.expander("📊 Patient Test Results", expanded=False):
+                        # Show patient's test results with editing capability
+                        with st.expander("📊 Patient Test Results (View & Edit)", expanded=False):
                             with get_db_connection() as results_conn:
                                 results_query = """
                                     SELECT r.id, r.created_at, r.panel_type, r.qc_status,
@@ -3136,6 +3195,212 @@ def main():
                                 )
                                 display_cols = ['id', 'created_at', 'panel_type', 'QC Display', 't21_res', 't18_res', 't13_res', 'sca_res', 'final_summary']
                                 st.dataframe(patient_results[display_cols], use_container_width=True)
+
+                                # Result selection for editing
+                                st.markdown("---")
+                                st.subheader("✏️ Edit Test Result")
+                                result_options = {f"Result #{row['id']} - {row['created_at']} ({row['panel_type']})": row['id']
+                                                  for _, row in patient_results.iterrows()}
+                                selected_result_label = st.selectbox(
+                                    "Select Result to Edit",
+                                    options=["-- Select a result --"] + list(result_options.keys()),
+                                    key="result_selector"
+                                )
+
+                                if selected_result_label != "-- Select a result --":
+                                    result_id = result_options[selected_result_label]
+                                    result_details = get_result_details(result_id)
+
+                                    if result_details:
+                                        # Get QC metrics with defaults
+                                        qc_m = result_details.get('qc_metrics', {})
+                                        full_z = result_details.get('full_z', {})
+
+                                        with st.form(key=f"edit_result_form_{result_id}"):
+                                            st.markdown("**Panel & Sequencing Metrics**")
+                                            panel_col, reads_col, cff_col = st.columns(3)
+                                            edit_panel = panel_col.selectbox("Panel Type",
+                                                options=list(config['PANEL_READ_LIMITS'].keys()),
+                                                index=list(config['PANEL_READ_LIMITS'].keys()).index(result_details['panel_type']) if result_details['panel_type'] in config['PANEL_READ_LIMITS'] else 0)
+                                            edit_reads = reads_col.number_input("Reads (M)", min_value=0.0, max_value=100.0,
+                                                value=float(qc_m.get('reads', 8.0)))
+                                            edit_cff = cff_col.number_input("Cff %", min_value=0.0, max_value=50.0,
+                                                value=float(qc_m.get('cff', 10.0)))
+
+                                            gc_col, qs_col, uniq_col, err_col = st.columns(4)
+                                            edit_gc = gc_col.number_input("GC %", min_value=0.0, max_value=100.0,
+                                                value=float(qc_m.get('gc', 40.0)))
+                                            edit_qs = qs_col.number_input("QS", min_value=0.0, max_value=10.0,
+                                                value=float(qc_m.get('qs', 1.0)))
+                                            edit_uniq = uniq_col.number_input("Unique %", min_value=0.0, max_value=100.0,
+                                                value=float(qc_m.get('unique_rate', 75.0)))
+                                            edit_err = err_col.number_input("Error %", min_value=0.0, max_value=5.0,
+                                                value=float(qc_m.get('error_rate', 0.1)))
+
+                                            st.markdown("---")
+                                            st.markdown("**Trisomy Z-Scores**")
+                                            z21_col, z18_col, z13_col = st.columns(3)
+                                            edit_z21 = z21_col.number_input("Z-21", min_value=-10.0, max_value=50.0,
+                                                value=float(full_z.get('21', full_z.get(21, 0.5))))
+                                            edit_z18 = z18_col.number_input("Z-18", min_value=-10.0, max_value=50.0,
+                                                value=float(full_z.get('18', full_z.get(18, 0.5))))
+                                            edit_z13 = z13_col.number_input("Z-13", min_value=-10.0, max_value=50.0,
+                                                value=float(full_z.get('13', full_z.get(13, 0.5))))
+
+                                            st.markdown("**Sex Chromosome Analysis**")
+                                            sca_col, zxx_col, zxy_col = st.columns(3)
+                                            # Extract SCA type from result
+                                            current_sca = result_details.get('sca_res', '')
+                                            sca_types = ["XX", "XY", "XO", "XXX", "XXY", "XYY"]
+                                            detected_sca = "XX"
+                                            for st_type in sca_types:
+                                                if st_type in current_sca.upper():
+                                                    detected_sca = st_type
+                                                    break
+                                            edit_sca_type = sca_col.selectbox("SCA Type", options=sca_types,
+                                                index=sca_types.index(detected_sca) if detected_sca in sca_types else 0)
+                                            edit_zxx = zxx_col.number_input("Z-XX", min_value=-10.0, max_value=50.0,
+                                                value=float(full_z.get('XX', 0.0)))
+                                            edit_zxy = zxy_col.number_input("Z-XY", min_value=-10.0, max_value=50.0,
+                                                value=float(full_z.get('XY', 0.0)))
+
+                                            st.markdown("---")
+                                            st.markdown("**Findings (CNV & RAT)**")
+                                            # Parse CNV list
+                                            cnv_list = result_details.get('cnv_list', [])
+                                            if cnv_list and isinstance(cnv_list, list):
+                                                cnv_text = "; ".join(cnv_list) if isinstance(cnv_list[0], str) else "; ".join([f"{c.get('size', 0)}Mb ({c.get('ratio', 0)}%)" for c in cnv_list])
+                                            else:
+                                                cnv_text = ""
+                                            edit_cnv = st.text_area("CNV Findings (format: size Mb (ratio%); ...)", value=cnv_text, height=60,
+                                                help="Enter CNV findings separated by semicolons, e.g., '5Mb (8%); 10Mb (12%)'")
+
+                                            # Parse RAT list
+                                            rat_list = result_details.get('rat_list', [])
+                                            if rat_list and isinstance(rat_list, list):
+                                                rat_text = "; ".join(rat_list) if isinstance(rat_list[0], str) else "; ".join([f"Chr {r.get('chr', 0)} (Z:{r.get('z', 0)})" for r in rat_list])
+                                            else:
+                                                rat_text = ""
+                                            edit_rat = st.text_area("RAT Findings (format: Chr # (Z:score); ...)", value=rat_text, height=60,
+                                                help="Enter RAT findings separated by semicolons, e.g., 'Chr 7 (Z:4.5); Chr 16 (Z:5.2)'")
+
+                                            st.markdown("---")
+                                            recalc_results = st.checkbox("Recalculate test results from Z-scores", value=True,
+                                                help="If checked, T21/T18/T13/SCA results and QC will be recalculated based on the edited Z-scores and metrics")
+
+                                            if st.form_submit_button("💾 Update Test Result", type="primary"):
+                                                # Prepare updated QC metrics
+                                                new_qc_metrics = {
+                                                    'reads': edit_reads,
+                                                    'cff': edit_cff,
+                                                    'gc': edit_gc,
+                                                    'qs': edit_qs,
+                                                    'unique_rate': edit_uniq,
+                                                    'error_rate': edit_err
+                                                }
+
+                                                # Prepare updated Z-scores
+                                                new_full_z = {
+                                                    '21': edit_z21, '18': edit_z18, '13': edit_z13,
+                                                    'XX': edit_zxx, 'XY': edit_zxy
+                                                }
+                                                # Preserve other z-scores from original
+                                                for k, v in full_z.items():
+                                                    if str(k) not in ['21', '18', '13', 'XX', 'XY']:
+                                                        new_full_z[str(k)] = v
+
+                                                if recalc_results:
+                                                    # Recalculate clinical results
+                                                    t21_res, t21_risk = analyze_trisomy(config, edit_z21, "21")
+                                                    t18_res, t18_risk = analyze_trisomy(config, edit_z18, "18")
+                                                    t13_res, t13_risk = analyze_trisomy(config, edit_z13, "13")
+                                                    sca_res, sca_risk = analyze_sca(config, edit_sca_type, edit_zxx, edit_zxy, edit_cff)
+
+                                                    # Parse and analyze CNV
+                                                    analyzed_cnvs = []
+                                                    is_cnv_high = False
+                                                    if edit_cnv.strip():
+                                                        for cnv_item in edit_cnv.split(';'):
+                                                            cnv_item = cnv_item.strip()
+                                                            if cnv_item:
+                                                                # Try to parse "XMb (Y%)" format
+                                                                import re
+                                                                match = re.search(r'([\d.]+)\s*[Mm]b.*?([\d.]+)\s*%', cnv_item)
+                                                                if match:
+                                                                    sz, rt = float(match.group(1)), float(match.group(2))
+                                                                    msg, _, risk = analyze_cnv(sz, rt)
+                                                                    if risk == "HIGH": is_cnv_high = True
+                                                                    analyzed_cnvs.append(f"{sz}Mb ({rt}%) -> {msg}")
+                                                                else:
+                                                                    analyzed_cnvs.append(cnv_item)
+
+                                                    # Parse and analyze RAT
+                                                    analyzed_rats = []
+                                                    is_rat_high = False
+                                                    if edit_rat.strip():
+                                                        for rat_item in edit_rat.split(';'):
+                                                            rat_item = rat_item.strip()
+                                                            if rat_item:
+                                                                match = re.search(r'[Cc]hr\s*(\d+).*?[Zz]:\s*([\d.]+)', rat_item)
+                                                                if match:
+                                                                    r_chr, r_z = int(match.group(1)), float(match.group(2))
+                                                                    msg, risk = analyze_rat(config, r_chr, r_z)
+                                                                    if risk in ["POSITIVE", "HIGH"]: is_rat_high = True
+                                                                    analyzed_rats.append(f"Chr {r_chr} (Z:{r_z}) -> {msg}")
+                                                                    new_full_z[str(r_chr)] = r_z
+                                                                else:
+                                                                    analyzed_rats.append(rat_item)
+
+                                                    # Determine final summary
+                                                    all_risks = [t21_risk, t18_risk, t13_risk, sca_risk]
+                                                    is_positive = "POSITIVE" in all_risks
+                                                    is_high_risk = "HIGH" in all_risks or is_cnv_high or is_rat_high
+
+                                                    qc_stat, qc_msg, qc_advice = check_qc_metrics(
+                                                        config, edit_panel, edit_reads, edit_cff, edit_gc,
+                                                        edit_qs, edit_uniq, edit_err, is_positive or is_high_risk
+                                                    )
+
+                                                    final_summary = "NEGATIVE"
+                                                    if is_positive: final_summary = "POSITIVE DETECTED"
+                                                    elif is_high_risk: final_summary = "HIGH RISK (SEE ADVICE)"
+                                                    if qc_stat == "FAIL": final_summary = "INVALID (QC FAIL)"
+                                                else:
+                                                    # Keep existing results, just update metrics/z-scores
+                                                    t21_res = result_details['t21_res']
+                                                    t18_res = result_details['t18_res']
+                                                    t13_res = result_details['t13_res']
+                                                    sca_res = result_details['sca_res']
+                                                    analyzed_cnvs = cnv_list if isinstance(cnv_list, list) else []
+                                                    analyzed_rats = rat_list if isinstance(rat_list, list) else []
+                                                    qc_stat = result_details['qc_status']
+                                                    qc_msg = result_details['qc_details']
+                                                    qc_advice = result_details['qc_advice']
+                                                    final_summary = result_details['final_summary']
+
+                                                # Prepare update data
+                                                update_data = {
+                                                    'panel_type': edit_panel,
+                                                    'qc_status': qc_stat,
+                                                    'qc_details': str(qc_msg) if recalc_results else qc_msg,
+                                                    'qc_advice': qc_advice,
+                                                    'qc_metrics': new_qc_metrics,
+                                                    't21_res': t21_res,
+                                                    't18_res': t18_res,
+                                                    't13_res': t13_res,
+                                                    'sca_res': sca_res,
+                                                    'cnv_list': analyzed_cnvs,
+                                                    'rat_list': analyzed_rats,
+                                                    'full_z': new_full_z,
+                                                    'final_summary': final_summary
+                                                }
+
+                                                success, message = update_result(result_id, update_data, st.session_state.user['id'])
+                                                if success:
+                                                    st.success(f"✅ {message}")
+                                                    st.rerun()
+                                                else:
+                                                    st.error(f"❌ Failed to update: {message}")
                             else:
                                 st.info("No test results found for this patient")
 
