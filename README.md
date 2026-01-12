@@ -73,9 +73,43 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
   - Failed login attempt logging
   - Export capabilities for compliance reviews
 
+- **Data Protection & Easy Launch**
+  - Automatic database backups on startup (keeps last 10)
+  - SQLite WAL mode for crash resilience
+  - Database integrity verification
+  - Desktop shortcut creator for one-click access
+  - Auto browser open - no manual link copying
+
 ---
 
 ## What's New in v2.2
+
+### Data Protection & Backup System
+- **Automatic Backups**: Database is automatically backed up on every application startup
+  - Backups stored in `backups/` folder with timestamps
+  - System automatically keeps the last 10 backups (older ones are removed)
+  - Uses SQLite's safe backup API for data integrity
+- **Crash Resilience**: SQLite WAL (Write-Ahead Logging) mode enabled
+  - Prevents database corruption if application closes unexpectedly
+  - Better performance for frequent read/write operations
+- **Database Integrity Checks**: Automatic verification on startup
+  - Alerts if any integrity issues are detected
+  - Manual integrity check available in Settings
+- **Backup Management UI** (in Settings tab):
+  - View all available backups with size and date
+  - Create manual backups anytime
+  - Restore from any backup (admin only)
+  - Verify database integrity on demand
+
+### Easy Launch Options
+- **Desktop Shortcut Creator**: Run `create_desktop_shortcut.bat` once
+  - Creates "NRIS - Patient Registry" shortcut on desktop
+  - No need to navigate to folders or copy links
+  - Choose between normal or silent (minimized console) mode
+- **Auto Browser Open**: Browser automatically opens when server is ready
+  - No more copying localhost links manually
+- **Silent Mode**: Run with minimized console window for cleaner desktop
+  - Use `start_NRIS_silent.vbs` directly, or choose option 2 in shortcut creator
 
 ### Bilingual PDF Reports
 - **Full French Language Support**: Generate PDF reports in both English and French
@@ -175,9 +209,16 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
      - Create an isolated virtual environment
      - Install all dependencies
      - Launch the application
+     - Open your browser automatically
 
 3. **Access the application**
    - Your web browser will automatically open to `http://localhost:8501`
+
+4. **(Optional) Create Desktop Shortcut for Easy Access**
+   - Double-click `create_desktop_shortcut.bat`
+   - Choose option 2 (Silent mode) for a cleaner experience
+   - A shortcut "NRIS - Patient Registry" will appear on your desktop
+   - From now on, just double-click the desktop shortcut to launch NRIS
 
 #### Manual Installation (All Platforms)
 
@@ -231,11 +272,13 @@ Password requirements:
 
 ### First-Time Setup
 
-1. **Login** with default credentials
-2. **Change Password** (required on first login)
-3. **Configure QC Thresholds** in Settings (optional)
-4. **Create User Accounts** for your team members
-5. **Import Patient Data** or add patients manually
+1. **Create Desktop Shortcut** (optional but recommended)
+   - Run `create_desktop_shortcut.bat` for easy future access
+2. **Login** with default credentials
+3. **Change Password** (required on first login)
+4. **Configure QC Thresholds** in Settings (optional)
+5. **Create User Accounts** for your team members
+6. **Import Patient Data** or add patients manually
 
 ### Daily Workflow
 
@@ -259,6 +302,11 @@ Password requirements:
   - Clean up soft-deleted orphaned patients
   - Clean up ALL orphaned patients (including active ones with 0 results)
   - Frees up MRN IDs for reuse
+- **Data Protection**:
+  - View and manage automatic backups
+  - Create manual backups
+  - Restore from previous backups
+  - Verify database integrity
 - **Audit Log Review**: Monitor all system activity
 - **Configuration**: Adjust QC and clinical thresholds
 
@@ -280,11 +328,15 @@ Password requirements:
 ```
 NRIS/
 ├── NRIS_Enhanced.py           # Main application
-├── start_NRIS_v2.bat          # Windows launcher
+├── start_NRIS_v2.bat          # Windows launcher (auto-opens browser)
+├── start_NRIS_silent.vbs      # Silent launcher (minimized console)
+├── create_desktop_shortcut.bat # Creates desktop shortcut for easy access
 ├── requirements_NRIS_v2.txt   # Python dependencies
 ├── README.md                  # This file
 ├── nipt_registry_v2.db        # Database (auto-created)
-└── nris_config.json           # Configuration (auto-created)
+├── nris_config.json           # Configuration (auto-created)
+└── backups/                   # Automatic backups (auto-created)
+    └── nris_backup_*.db       # Timestamped database backups
 ```
 
 ### Database Schema
@@ -371,11 +423,25 @@ Default quality control thresholds can be customized in the Settings tab:
 - Audit trail for regulatory compliance
 - Soft delete preserves data integrity
 
-### Backup Recommendations
+### Data Protection & Backups
 
-Regularly backup the following files:
-- `nipt_registry_v2.db` - Contains all patient and result data
-- `nris_config.json` - Contains custom configuration settings
+**Automatic Protection (Built-in)**
+- Database is automatically backed up on every application startup
+- Backups are stored in the `backups/` folder with timestamps
+- System keeps the last 10 backups automatically
+- SQLite WAL mode prevents corruption from unexpected shutdowns
+- Database integrity is verified on each startup
+
+**Manual Backup Options**
+- Create manual backups anytime from Settings → Data Protection
+- Restore from any backup (admin only) if needed
+- Verify database integrity on demand
+
+**For Additional Safety**
+Periodically copy these files to an external location:
+- `backups/` folder - Contains all automatic backups
+- `nipt_registry_v2.db` - Current database
+- `nris_config.json` - Custom configuration settings
 
 ---
 
@@ -420,6 +486,19 @@ Regularly backup the following files:
 ## Version History
 
 ### Version 2.2 (Current)
+**Data Protection**
+- Automatic database backup on every startup
+- SQLite WAL mode for crash resilience
+- Database integrity verification on startup
+- Backup management UI in Settings (view, create, restore)
+- Automatic backup rotation (keeps last 10)
+
+**Easy Launch**
+- Desktop shortcut creator for one-click access
+- Auto browser open when server is ready
+- Silent mode option (minimized console)
+- No more navigating to folders or copying links
+
 **Bilingual Support**
 - Full French language support for PDF reports
 - Language selection in Analysis and Registry tabs
