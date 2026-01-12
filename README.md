@@ -1,55 +1,101 @@
 # NRIS - NIPT Result Interpretation Software
 
-**Version 2.0 Enhanced Edition**
-*Advanced Clinical Genetics Dashboard with Authentication, Analytics & Reporting*
+**Version 2.1 Enhanced Edition**
+*Advanced Clinical Genetics Dashboard with Enhanced Security, Performance & Reliability*
 
 ---
 
-## 📋 Overview
+## Overview
 
 NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical genetics dashboard designed for managing and interpreting Non-Invasive Prenatal Testing (NIPT) results. This enhanced edition provides healthcare professionals with powerful tools for patient management, quality control analysis, clinical interpretation, and automated reporting.
 
 ### Key Features
 
-- **🔐 User Authentication & Role-Based Access Control**
-  - Secure login system with password hashing
+- **User Authentication & Role-Based Access Control**
+  - Secure login system with SHA256 password hashing and unique salts
   - Role-based permissions (Admin, Geneticist, Technician)
-  - Session management and audit logging
+  - Account lockout protection after failed login attempts
+  - Session timeout for security (60 minutes of inactivity)
+  - Forced password change on first login
+  - Strong password requirements (8+ chars, uppercase, lowercase, numbers)
 
-- **👥 Patient Management**
+- **Patient Management**
   - Complete patient demographics and clinical history
-  - MRN (Medical Record Number) tracking
+  - MRN (Medical Record Number) tracking with uniqueness enforcement
   - BMI calculations and gestational age tracking
-  - Comprehensive clinical notes
+  - Soft delete functionality (no ghost patients)
+  - Patient data restoration capability
+  - Orphaned patient cleanup utility
 
-- **🧬 NIPT Result Analysis**
+- **NIPT Result Analysis**
   - Multiple panel types (Basic, Standard, Plus, Pro)
   - Quality control metrics validation
   - Automated trisomy risk assessment (T13, T18, T21)
-  - Sex chromosome anelploidy (SCA) detection
+  - Sex chromosome aneuploidy (SCA) detection
   - Rare autosomal trisomy (RAT) analysis
   - Fetal sex determination
 
-- **📊 Advanced Analytics & Visualizations**
+- **PDF Import (Enhanced)**
+  - Comprehensive data extraction from PDF reports
+  - File validation (size, type, format verification)
+  - Extraction confidence scoring (HIGH/MEDIUM/LOW)
+  - Detailed error handling and logging
+  - Support for various report formats
+  - Batch processing with progress tracking
+
+- **Advanced Analytics & Visualizations**
   - Interactive dashboards with Plotly
   - QC metrics trending and statistics
   - Result distribution analysis
   - Panel utilization reports
+  - Cached analytics for better performance
 
-- **📄 Automated PDF Reporting**
+- **Automated PDF Reporting**
   - Professional clinical reports with customizable headers
   - QC metrics summary and interpretation
   - Clinical recommendations based on thresholds
   - Digital signatures and timestamps
 
-- **🔍 Audit Trail & Compliance**
+- **Audit Trail & Compliance**
   - Complete user activity logging
   - Result modification tracking
+  - Login/logout tracking
+  - Failed login attempt logging
   - Export capabilities for compliance reviews
 
 ---
 
-## 🚀 Quick Start
+## What's New in v2.1
+
+### Security Enhancements
+- **Password Complexity**: Passwords must now contain 8+ characters with uppercase, lowercase, and numbers
+- **Account Lockout**: Accounts lock for 15 minutes after 5 failed login attempts
+- **Session Timeout**: Automatic logout after 60 minutes of inactivity
+- **Forced Password Change**: Default admin account requires password change on first login
+- **Enhanced Audit Logging**: All security events are logged
+
+### Data Integrity Improvements
+- **Foreign Key Enforcement**: Database foreign key constraints now properly enforced
+- **Soft Delete**: Deleted patients are marked rather than removed, preventing ghost records
+- **Transaction Support**: Import operations use database transactions to prevent partial saves
+- **Orphan Cleanup**: Admin utility to clean up orphaned patient records
+
+### Performance Optimizations
+- **Database Indexes**: Added indexes on frequently queried columns
+- **Query Caching**: Analytics queries cached for 60 seconds
+- **Optimized Queries**: Combined multiple queries into single efficient queries
+- **Reduced Database Calls**: Minimized redundant database connections
+
+### PDF Import Improvements
+- **File Validation**: Size limits, type checking, and header verification
+- **Better Error Handling**: Specific error messages for different failure types
+- **Extraction Confidence**: Shows confidence level for extracted data
+- **Missing Field Detection**: Reports which fields couldn't be extracted
+- **Scanned PDF Detection**: Warns when PDF appears to be image-based
+
+---
+
+## Quick Start
 
 ### Prerequisites
 
@@ -110,23 +156,29 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
 
 ---
 
-## 🔑 Default Login Credentials
+## Default Login Credentials
 
 ```
 Username: admin
 Password: admin123
 ```
 
-**⚠️ IMPORTANT:** Change the default password immediately after first login for security!
+**IMPORTANT: You will be required to change the default password on first login!**
+
+Password requirements:
+- At least 8 characters
+- At least one uppercase letter (A-Z)
+- At least one lowercase letter (a-z)
+- At least one number (0-9)
 
 ---
 
-## 📚 Usage Guide
+## Usage Guide
 
 ### First-Time Setup
 
 1. **Login** with default credentials
-2. **Change Password** in Settings → User Management
+2. **Change Password** (required on first login)
 3. **Configure QC Thresholds** in Settings (optional)
 4. **Create User Accounts** for your team members
 5. **Import Patient Data** or add patients manually
@@ -146,14 +198,21 @@ Password: admin123
 - **Audit Log Tab**: Complete activity tracking and compliance reporting
 - **Export Features**: Excel, CSV, and JSON data export capabilities
 
+### Admin Functions
+
+- **User Management**: Create/manage user accounts
+- **Database Maintenance**: Clean up orphaned patient records
+- **Audit Log Review**: Monitor all system activity
+- **Configuration**: Adjust QC and clinical thresholds
+
 ---
 
-## 🛠️ Technical Specifications
+## Technical Specifications
 
 ### Technology Stack
 
 - **Framework**: Streamlit 1.28+
-- **Database**: SQLite3
+- **Database**: SQLite3 with foreign key enforcement
 - **Visualization**: Plotly 5.17+
 - **Reporting**: ReportLab 4.0+
 - **Data Processing**: Pandas 2.0+
@@ -171,6 +230,20 @@ NRIS/
 └── nris_config.json           # Configuration (auto-created)
 ```
 
+### Database Schema
+
+The application uses SQLite with the following main tables:
+- **users**: User accounts and authentication
+- **patients**: Patient demographics (with soft delete support)
+- **results**: NIPT test results linked to patients
+- **audit_log**: Comprehensive activity logging
+
+Indexes are automatically created on:
+- `patients(mrn_id)` - Fast patient lookup
+- `results(patient_id)` - Fast result retrieval
+- `results(created_at)` - Date-based queries
+- `audit_log(timestamp)` - Audit log queries
+
 ### Dependencies
 
 ```
@@ -185,7 +258,7 @@ PyPDF2>=3.0.0
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 ### QC Thresholds
 
@@ -213,17 +286,25 @@ Default quality control thresholds can be customized in the Settings tab:
 - **NIPT Plus**: 12M reads minimum
 - **NIPT Pro**: 20M reads minimum
 
+### Security Settings (Built-in)
+
+- **Session Timeout**: 60 minutes
+- **Account Lockout**: 5 failed attempts = 15 minute lockout
+- **Password Requirements**: 8+ chars, mixed case, numbers
+
 ---
 
-## 🔒 Security & Compliance
+## Security & Compliance
 
 ### Security Features
 
-- Password hashing using industry-standard algorithms
-- Session-based authentication
+- SHA256 password hashing with random salt
+- Session-based authentication with timeout
 - Role-based access control (RBAC)
+- Account lockout protection
 - Audit logging for all data modifications
 - Secure database storage with parameterized queries
+- Foreign key constraint enforcement
 
 ### Data Privacy
 
@@ -231,6 +312,7 @@ Default quality control thresholds can be customized in the Settings tab:
 - No external data transmission
 - HIPAA compliance considerations built-in
 - Audit trail for regulatory compliance
+- Soft delete preserves data integrity
 
 ### Backup Recommendations
 
@@ -240,7 +322,7 @@ Regularly backup the following files:
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
@@ -258,6 +340,19 @@ Regularly backup the following files:
 - Update pip: `pip install --upgrade pip`
 - Reinstall requirements: `pip install -r requirements_NRIS_v2.txt --force-reinstall`
 
+**PDF extraction issues**
+- Ensure PDFs are text-based (not scanned images)
+- Check extraction confidence level for quality indicators
+- Review missing fields list for problematic PDFs
+
+**Account locked**
+- Wait 15 minutes for automatic unlock
+- Admin can reset via database if needed
+
+**Session expired**
+- Re-login after 60 minutes of inactivity
+- This is a security feature
+
 **Browser won't open**
 - Manually navigate to `http://localhost:8501`
 - Try a different browser
@@ -265,9 +360,22 @@ Regularly backup the following files:
 
 ---
 
-## 📝 Version History
+## Version History
 
-### Version 2.0 (Current)
+### Version 2.1 (Current)
+- Enhanced security with password complexity and account lockout
+- Session timeout for inactive users
+- Forced password change on first login
+- Database foreign key enforcement
+- Soft delete for patients (no ghost records)
+- Transaction support for data integrity
+- Database indexes for performance
+- Query caching for analytics
+- PDF validation and improved extraction
+- Admin database maintenance tools
+- Comprehensive audit logging improvements
+
+### Version 2.0
 - Added user authentication and role-based access control
 - Implemented comprehensive audit logging
 - Enhanced analytics dashboard with Plotly visualizations
@@ -278,19 +386,19 @@ Regularly backup the following files:
 
 ---
 
-## 👤 Author
+## Author
 
 **Aziz El Ghezal**
 
 ---
 
-## 📄 License
+## License
 
 This software is provided for clinical and research use. Please ensure compliance with local regulations regarding medical software and patient data handling.
 
 ---
 
-## 🤝 Support & Contributing
+## Support & Contributing
 
 For issues, feature requests, or contributions:
 - Open an issue on the GitHub repository
@@ -299,10 +407,10 @@ For issues, feature requests, or contributions:
 
 ---
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 This software is designed to assist healthcare professionals in interpreting NIPT results. Clinical decisions should always be made by qualified medical professionals considering all available clinical information. This tool does not replace professional medical judgment.
 
 ---
 
-**NRIS v2.0 Enhanced Edition** - Advancing Clinical Genetics Through Technology
+**NRIS v2.1 Enhanced Edition** - Advancing Clinical Genetics Through Technology
