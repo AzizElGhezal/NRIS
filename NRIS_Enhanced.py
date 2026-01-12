@@ -140,6 +140,18 @@ def init_database() -> None:
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+        # Migration: Add QC override columns for staff validation
+        for col_sql in [
+            "ALTER TABLE results ADD COLUMN qc_override INTEGER DEFAULT 0",
+            "ALTER TABLE results ADD COLUMN qc_override_by INTEGER",
+            "ALTER TABLE results ADD COLUMN qc_override_reason TEXT",
+            "ALTER TABLE results ADD COLUMN qc_override_at TEXT"
+        ]:
+            try:
+                c.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
         # Migration: Add new user security columns if they don't exist
         for col_sql in [
             "ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0",
@@ -412,10 +424,75 @@ def analyze_cnv(size: float, ratio: float) -> Tuple[str, float, str]:
     elif size > 7: threshold = 8.0
     elif size > 3.5: threshold = 10.0
     else: threshold = 12.0
-    
+
     if ratio >= threshold:
         return f"High Risk -> Re-library", threshold, "HIGH"
     return "Low Risk", threshold, "LOW"
+
+def override_qc_status(result_id: int, reason: str, user_id: int) -> Tuple[bool, str]:
+    """Override QC status to PASS for a result. Staff validation feature."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+                UPDATE results
+                SET qc_override = 1,
+                    qc_override_by = ?,
+                    qc_override_reason = ?,
+                    qc_override_at = ?
+                WHERE id = ?
+            """, (user_id, reason, datetime.now().isoformat(), result_id))
+            if c.rowcount == 0:
+                return False, "Result not found"
+            conn.commit()
+            log_audit("QC_OVERRIDE", f"QC override applied to result {result_id}: {reason}", user_id)
+            return True, "QC status overridden to PASS"
+    except Exception as e:
+        return False, f"Override failed: {str(e)}"
+
+def remove_qc_override(result_id: int, user_id: int) -> Tuple[bool, str]:
+    """Remove QC override from a result."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+                UPDATE results
+                SET qc_override = 0,
+                    qc_override_by = NULL,
+                    qc_override_reason = NULL,
+                    qc_override_at = NULL
+                WHERE id = ?
+            """, (result_id,))
+            if c.rowcount == 0:
+                return False, "Result not found"
+            conn.commit()
+            log_audit("QC_OVERRIDE_REMOVED", f"QC override removed from result {result_id}", user_id)
+            return True, "QC override removed"
+    except Exception as e:
+        return False, f"Remove override failed: {str(e)}"
+
+def get_qc_override_info(result_id: int) -> Optional[Dict]:
+    """Get QC override information for a result."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT r.qc_override, r.qc_override_reason, r.qc_override_at, u.full_name
+                FROM results r
+                LEFT JOIN users u ON r.qc_override_by = u.id
+                WHERE r.id = ?
+            """, (result_id,))
+            row = c.fetchone()
+            if row and row[0]:
+                return {
+                    'is_overridden': bool(row[0]),
+                    'reason': row[1],
+                    'override_at': row[2],
+                    'override_by': row[3]
+                }
+    except Exception:
+        pass
+    return None
 
 def check_duplicate_patient(mrn: str) -> Tuple[bool, Optional[Dict]]:
     """Check if a patient with this MRN already exists (excluding deleted). Returns (exists, patient_info)."""
@@ -479,11 +556,30 @@ def delete_patient(patient_id: int, hard_delete: bool = False) -> Tuple[bool, st
                          st.session_state.user['id'] if 'user' in st.session_state else None)
                 return True, f"Permanently deleted patient {mrn} and {deleted_results} associated results"
             else:
-                # Soft delete - mark as deleted
-                c.execute("UPDATE patients SET is_deleted = 1 WHERE id = ?", (patient_id,))
+                # Soft delete - mark as deleted AND modify MRN to free it for reuse
+                # Store original MRN in clinical_notes for potential recovery
+                timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+                deleted_mrn = f"DELETED_{timestamp}_{mrn}"
+
+                # Get current clinical notes to preserve them
+                c.execute("SELECT clinical_notes FROM patients WHERE id = ?", (patient_id,))
+                current_notes = c.fetchone()[0] or ''
+
+                # Append original MRN to notes for recovery purposes
+                recovery_note = f"[DELETED: Original MRN was '{mrn}']"
+                if recovery_note not in current_notes:
+                    updated_notes = f"{current_notes}\n{recovery_note}".strip()
+                else:
+                    updated_notes = current_notes
+
+                c.execute("""
+                    UPDATE patients
+                    SET is_deleted = 1, mrn_id = ?, clinical_notes = ?
+                    WHERE id = ?
+                """, (deleted_mrn, updated_notes, patient_id))
                 conn.commit()
                 log_audit("DELETE_PATIENT",
-                         f"Soft deleted patient {mrn} ({name})",
+                         f"Soft deleted patient {mrn} ({name}), MRN changed to {deleted_mrn}",
                          st.session_state.user['id'] if 'user' in st.session_state else None)
                 return True, f"Patient {mrn} marked as deleted"
 
@@ -491,11 +587,47 @@ def delete_patient(patient_id: int, hard_delete: bool = False) -> Tuple[bool, st
         return False, f"Delete failed: {str(e)}"
 
 def restore_patient(patient_id: int) -> Tuple[bool, str]:
-    """Restore a soft-deleted patient."""
+    """Restore a soft-deleted patient. Attempts to recover original MRN from clinical notes."""
     try:
         with get_db_connection() as conn:
             c = conn.cursor()
-            c.execute("UPDATE patients SET is_deleted = 0 WHERE id = ?", (patient_id,))
+
+            # Get current patient data including notes with original MRN
+            c.execute("SELECT mrn_id, clinical_notes FROM patients WHERE id = ?", (patient_id,))
+            row = c.fetchone()
+            if not row:
+                return False, "Patient not found"
+
+            current_mrn, notes = row
+
+            # Try to extract original MRN from notes
+            original_mrn = None
+            if notes:
+                import re
+                mrn_match = re.search(r'\[DELETED: Original MRN was \'([^\']+)\'\]', notes)
+                if mrn_match:
+                    original_mrn = mrn_match.group(1)
+                    # Check if original MRN is available (not taken by another patient)
+                    c.execute("""
+                        SELECT id FROM patients
+                        WHERE mrn_id = ? AND id != ? AND (is_deleted = 0 OR is_deleted IS NULL)
+                    """, (original_mrn, patient_id))
+                    if c.fetchone():
+                        # Original MRN is taken, can't restore to it
+                        original_mrn = None
+
+            if original_mrn:
+                # Restore with original MRN and clean up notes
+                cleaned_notes = notes.replace(f"[DELETED: Original MRN was '{original_mrn}']", '').strip()
+                c.execute("""
+                    UPDATE patients
+                    SET is_deleted = 0, mrn_id = ?, clinical_notes = ?
+                    WHERE id = ?
+                """, (original_mrn, cleaned_notes, patient_id))
+            else:
+                # Just restore without changing MRN (keep the DELETED_ prefix or current MRN)
+                c.execute("UPDATE patients SET is_deleted = 0 WHERE id = ?", (patient_id,))
+
             if c.rowcount == 0:
                 return False, "Patient not found"
             conn.commit()
@@ -823,6 +955,9 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
             'risk_t21': '',
             'risk_t18': '',
             'risk_t13': '',
+            't21_direct': '',  # Direct result extraction (POSITIVE/LOW_RISK)
+            't18_direct': '',  # Direct result extraction (POSITIVE/LOW_RISK)
+            't13_direct': '',  # Direct result extraction (POSITIVE/LOW_RISK)
             'sensitivity_t21': '',
             'specificity_t21': '',
             'ppv_t21': '',
@@ -1133,22 +1268,46 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
                     break
 
         # ===== Z-SCORES (ALL AUTOSOMES) =====
+        # Helper function to extract Z-score with multiple attempts, preferring later matches (final results)
+        def extract_z_score(patterns_list, search_text):
+            """Extract Z-score using patterns, prefer later matches for final/corrected values."""
+            all_matches = []
+            for pattern in patterns_list:
+                # Find all matches, not just first
+                for match in re.finditer(pattern, search_text, re.IGNORECASE):
+                    try:
+                        z_val = float(match.group(1))
+                        if -20 <= z_val <= 50:  # Reasonable Z-score range
+                            all_matches.append((match.start(), z_val))
+                    except (ValueError, IndexError):
+                        continue
+            if all_matches:
+                # Return the LAST match (more likely to be the final/corrected value)
+                all_matches.sort(key=lambda x: x[0])
+                return round(all_matches[-1][1], 3)
+            return None
+
         # Extract Z-scores for main trisomies (13, 18, 21)
+        # Use word boundaries (\b) to prevent partial matches (e.g., Z1 matching in Z10)
         for chrom in [13, 18, 21]:
             z_patterns = [
-                rf'(?:Z[-\s]?{chrom}|Chr(?:omosome)?\s*{chrom}\s*Z)[:\s]+(-?\d+\.?\d*)',
-                rf'Trisomy\s+{chrom}.*?Z[-\s]?(?:Score)?[:\s]+(-?\d+\.?\d*)',
-                rf'T{chrom}.*?Z[:\s]+(-?\d+\.?\d*)',
-                rf'Chr(?:omosome)?\s*{chrom}[:\s]+.*?Z[:\s]+(-?\d+\.?\d*)',
-                rf'Z[-\s]?Score.*?{chrom}[:\s]+(-?\d+\.?\d*)',
+                # Exact formats with word boundaries
+                rf'Z[-\s]?{chrom}\b[:\s]+(-?\d+\.?\d*)',
+                rf'Z{chrom}\b[:\s]*[=:]\s*(-?\d+\.?\d*)',
+                # Trisomy-specific patterns
+                rf'Trisomy\s+{chrom}\b[^Z]*?Z[-\s]?(?:Score)?[:\s]+(-?\d+\.?\d*)',
+                rf'T{chrom}\b[^Z]*?Z[-\s]?(?:Score)?[:\s]+(-?\d+\.?\d*)',
+                # Chromosome-based patterns with word boundaries
+                rf'Chr(?:omosome)?\s*{chrom}\b\s*Z[:\s]+(-?\d+\.?\d*)',
+                rf'Chr(?:omosome)?\s*{chrom}\b[:\s]+[^Z]*?Z[:\s]+(-?\d+\.?\d*)',
+                # Result line patterns (common in tables)
+                rf'{chrom}\s*[|,\t]\s*(-?\d+\.?\d*)\s*[|,\t]',
+                # Z-score followed by chromosome
+                rf'Z[-\s]?Score[:\s]+(-?\d+\.?\d*).*?(?:Chr|Chromosome|Trisomy)\s*{chrom}\b',
             ]
-            for pattern in z_patterns:
-                z_match = re.search(pattern, text, re.IGNORECASE)
-                if z_match:
-                    z_val = float(z_match.group(1))
-                    if -20 <= z_val <= 50:  # Reasonable Z-score range
-                        data['z_scores'][chrom] = round(z_val, 3)
-                        break
+            z_val = extract_z_score(z_patterns, text)
+            if z_val is not None:
+                data['z_scores'][chrom] = z_val
 
         # Extract Z-scores for ALL other autosomes (1-22, excluding 13, 18, 21)
         for chrom in range(1, 23):
@@ -1156,44 +1315,38 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
                 continue  # Already captured above
 
             z_patterns = [
-                rf'(?:Z[-\s]?{chrom}|Chr(?:omosome)?\s*{chrom}\s*Z)[:\s]+(-?\d+\.?\d*)',
-                rf'Chromosome\s+{chrom}.*?Z[:\s]+(-?\d+\.?\d*)',
-                rf'Chr\s*{chrom}[:\s]+.*?(-?\d+\.?\d*)',
+                # Exact formats with word boundaries - critical for single digit chromosomes
+                rf'Z[-\s]?{chrom}\b[:\s]+(-?\d+\.?\d*)',
+                rf'Z{chrom}\b[:\s]*[=:]\s*(-?\d+\.?\d*)',
+                rf'Chr(?:omosome)?\s*{chrom}\b\s*Z[:\s]+(-?\d+\.?\d*)',
+                rf'Chr(?:omosome)?\s*{chrom}\b[:\s]+[^Z]*?Z[:\s]+(-?\d+\.?\d*)',
             ]
-            for pattern in z_patterns:
-                z_match = re.search(pattern, text, re.IGNORECASE)
-                if z_match:
-                    z_val = float(z_match.group(1))
-                    if -20 <= z_val <= 50:
-                        data['z_scores'][chrom] = round(z_val, 3)
-                        break
+            z_val = extract_z_score(z_patterns, text)
+            if z_val is not None:
+                data['z_scores'][chrom] = z_val
 
-        # Extract SCA Z-scores (XX and XY)
+        # Extract SCA Z-scores (XX and XY) - improved patterns
         z_xx_patterns = [
-            r'Z[-\s]?XX[:\s]+(-?\d+\.?\d*)',
-            r'XX\s+Z[-\s]?Score[:\s]+(-?\d+\.?\d*)',
-            r'X[:\s]+.*?Z[:\s]+(-?\d+\.?\d*)',
+            r'Z[-\s]?XX\b[:\s]+(-?\d+\.?\d*)',
+            r'ZXX\b[:\s]*[=:]\s*(-?\d+\.?\d*)',
+            r'XX\s+Z[-\s]?(?:Score)?[:\s]+(-?\d+\.?\d*)',
+            r'(?:Sex\s+)?(?:Chromosome\s+)?XX[:\s]+[^Z]*?Z[:\s]+(-?\d+\.?\d*)',
+            r'X\s+Chromosome[:\s]+[^Z]*?Z[:\s]+(-?\d+\.?\d*)',
         ]
-        for pattern in z_xx_patterns:
-            z_xx_match = re.search(pattern, text, re.IGNORECASE)
-            if z_xx_match:
-                z_val = float(z_xx_match.group(1))
-                if -20 <= z_val <= 50:
-                    data['z_scores']['XX'] = round(z_val, 3)
-                    break
+        z_val = extract_z_score(z_xx_patterns, text)
+        if z_val is not None:
+            data['z_scores']['XX'] = z_val
 
         z_xy_patterns = [
-            r'Z[-\s]?XY[:\s]+(-?\d+\.?\d*)',
-            r'XY\s+Z[-\s]?Score[:\s]+(-?\d+\.?\d*)',
-            r'Y[:\s]+.*?Z[:\s]+(-?\d+\.?\d*)',
+            r'Z[-\s]?XY\b[:\s]+(-?\d+\.?\d*)',
+            r'ZXY\b[:\s]*[=:]\s*(-?\d+\.?\d*)',
+            r'XY\s+Z[-\s]?(?:Score)?[:\s]+(-?\d+\.?\d*)',
+            r'(?:Sex\s+)?(?:Chromosome\s+)?XY[:\s]+[^Z]*?Z[:\s]+(-?\d+\.?\d*)',
+            r'Y\s+Chromosome[:\s]+[^Z]*?Z[:\s]+(-?\d+\.?\d*)',
         ]
-        for pattern in z_xy_patterns:
-            z_xy_match = re.search(pattern, text, re.IGNORECASE)
-            if z_xy_match:
-                z_val = float(z_xy_match.group(1))
-                if -20 <= z_val <= 50:
-                    data['z_scores']['XY'] = round(z_val, 3)
-                    break
+        z_val = extract_z_score(z_xy_patterns, text)
+        if z_val is not None:
+            data['z_scores']['XY'] = z_val
 
         # ===== SCA TYPE & FETAL SEX DETECTION =====
         sca_patterns = [
@@ -1354,6 +1507,32 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
             risk_match = re.search(pattern, text, re.IGNORECASE)
             if risk_match:
                 data[field] = f"1 in {risk_match.group(1)}"
+
+        # ===== DIRECT TRISOMY RESULT EXTRACTION =====
+        # Extract trisomy results directly from text (more reliable than Z-score interpretation)
+        trisomy_result_patterns = [
+            # T21 patterns
+            (r'(?:T21|Trisomy\s*21|Down\s*Syndrome)[:\s]+[^,\n]{0,30}?(Positive|Negative|Low\s*Risk|High\s*Risk|Detected|Not\s*Detected)', 't21_direct'),
+            (r'(?:Trisomy\s*21|T21|Down)[^,\n]{0,50}?(?:Result|Status|Risk)[:\s]+(Positive|Negative|Low|High)', 't21_direct'),
+            # T18 patterns
+            (r'(?:T18|Trisomy\s*18|Edwards\s*Syndrome)[:\s]+[^,\n]{0,30}?(Positive|Negative|Low\s*Risk|High\s*Risk|Detected|Not\s*Detected)', 't18_direct'),
+            (r'(?:Trisomy\s*18|T18|Edwards)[^,\n]{0,50}?(?:Result|Status|Risk)[:\s]+(Positive|Negative|Low|High)', 't18_direct'),
+            # T13 patterns
+            (r'(?:T13|Trisomy\s*13|Patau\s*Syndrome)[:\s]+[^,\n]{0,30}?(Positive|Negative|Low\s*Risk|High\s*Risk|Detected|Not\s*Detected)', 't13_direct'),
+            (r'(?:Trisomy\s*13|T13|Patau)[^,\n]{0,50}?(?:Result|Status|Risk)[:\s]+(Positive|Negative|Low|High)', 't13_direct'),
+        ]
+        for pattern, field in trisomy_result_patterns:
+            result_match = re.search(pattern, text, re.IGNORECASE)
+            if result_match:
+                result_text = result_match.group(1).strip().lower()
+                # Normalize the result
+                if result_text in ['positive', 'detected', 'high', 'high risk']:
+                    data[field] = 'POSITIVE'
+                elif result_text in ['negative', 'not detected', 'low', 'low risk']:
+                    data[field] = 'LOW_RISK'
+                # Only store if not already set
+                if field not in data or not data.get(field):
+                    data[field] = data.get(field, '')
 
         # Extract clinical notes
         notes_patterns = [
@@ -1529,10 +1708,13 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
                        r.t21_res, r.t18_res, r.t13_res, r.sca_res,
                        r.cnv_json, r.rat_json, r.full_z_json, r.final_summary,
                        p.weight_kg, p.height_cm, p.bmi,
-                       u.full_name as technician_name
+                       u.full_name as technician_name,
+                       r.qc_override, r.qc_override_reason, r.qc_override_at,
+                       ov_user.full_name as qc_override_by_name
                 FROM results r
                 JOIN patients p ON p.id = r.patient_id
                 LEFT JOIN users u ON u.id = r.created_by
+                LEFT JOIN users ov_user ON ov_user.id = r.qc_override_by
                 WHERE r.id = ?
             """
             df = pd.read_sql(query, conn, params=(report_id,))
@@ -1546,6 +1728,11 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         qc_details = row['qc_details'] if row['qc_details'] else "[]"
         qc_metrics = json.loads(row['qc_metrics_json']) if row.get('qc_metrics_json') else {}
         config = load_config()
+
+        # Check for QC override - if overridden, effective status is PASS
+        qc_override = bool(row.get('qc_override'))
+        qc_override_reason = row.get('qc_override_reason', '')
+        qc_override_by = row.get('qc_override_by_name', '')
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.4*inch, bottomMargin=0.5*inch)
@@ -1628,9 +1815,15 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         # ===== QUALITY CONTROL METRICS =====
         story.append(Paragraph("QUALITY CONTROL ASSESSMENT", section_style))
 
-        qc_status = row['qc_status'] or 'N/A'
-        qc_color = colors.HexColor('#27ae60') if qc_status == 'PASS' else (
-            colors.HexColor('#f39c12') if qc_status == 'WARNING' else colors.HexColor('#e74c3c'))
+        # Determine effective QC status (override takes precedence)
+        original_qc_status = row['qc_status'] or 'N/A'
+        if qc_override:
+            qc_status = 'PASS'
+            qc_color = colors.HexColor('#27ae60')  # Green for PASS
+        else:
+            qc_status = original_qc_status
+            qc_color = colors.HexColor('#27ae60') if qc_status == 'PASS' else (
+                colors.HexColor('#f39c12') if qc_status == 'WARNING' else colors.HexColor('#e74c3c'))
 
         qc_header = [['QC Status', 'Parameter', 'Value', 'Reference Range', 'Status']]
         qc_rows = []
@@ -1683,9 +1876,12 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
             ('Quality Score', qs_display, f"< {thresholds['QS_LIMIT_NEG']}", qs_status),
         ]
 
+        # Display status - add "(Override)" indicator if QC was overridden
+        qc_display_status = f"{qc_status} (Override)" if qc_override else qc_status
+
         for i, (param, val, ref, status) in enumerate(qc_items):
             if i == 0:
-                qc_rows.append([qc_status, param, val, ref, status])
+                qc_rows.append([qc_display_status, param, val, ref, status])
             else:
                 qc_rows.append(['', param, val, ref, status])
 
@@ -1720,9 +1916,21 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
         qc_table.setStyle(TableStyle(table_style_list))
         story.append(qc_table)
 
-        if row['qc_advice'] and row['qc_advice'] != 'None':
+        if row['qc_advice'] and row['qc_advice'] != 'None' and not qc_override:
             story.append(Spacer(1, 0.05*inch))
             story.append(Paragraph(f"<b>QC Recommendation:</b> {row['qc_advice']}", warning_style))
+
+        # Add QC override notice if applicable
+        if qc_override:
+            story.append(Spacer(1, 0.05*inch))
+            override_style = ParagraphStyle('Override', parent=styles['Normal'], fontSize=9,
+                                           textColor=colors.HexColor('#1a5276'), fontName='Helvetica-Bold')
+            override_note = f"<b>QC Override Applied:</b> Original status was {original_qc_status}. "
+            if qc_override_by:
+                override_note += f"Validated by {qc_override_by}. "
+            if qc_override_reason:
+                override_note += f"Reason: {qc_override_reason}"
+            story.append(Paragraph(override_note, override_style))
 
         story.append(Spacer(1, 0.1*inch))
 
@@ -2734,7 +2942,8 @@ def main():
                             with get_db_connection() as results_conn:
                                 results_query = """
                                     SELECT r.id, r.created_at, r.panel_type, r.qc_status,
-                                           r.t21_res, r.t18_res, r.t13_res, r.sca_res, r.final_summary
+                                           r.t21_res, r.t18_res, r.t13_res, r.sca_res, r.final_summary,
+                                           r.qc_override, r.qc_override_reason
                                     FROM results r
                                     WHERE r.patient_id = ?
                                     ORDER BY r.created_at DESC
@@ -2743,9 +2952,69 @@ def main():
 
                             if not patient_results.empty:
                                 patient_results['created_at'] = pd.to_datetime(patient_results['created_at']).dt.strftime('%Y-%m-%d %H:%M')
-                                st.dataframe(patient_results, use_container_width=True)
+                                # Show effective QC status (with override indicator)
+                                patient_results['QC Display'] = patient_results.apply(
+                                    lambda r: f"PASS (Override)" if r.get('qc_override') else r['qc_status'], axis=1
+                                )
+                                display_cols = ['id', 'created_at', 'panel_type', 'QC Display', 't21_res', 't18_res', 't13_res', 'sca_res', 'final_summary']
+                                st.dataframe(patient_results[display_cols], use_container_width=True)
                             else:
                                 st.info("No test results found for this patient")
+
+                        # QC Override Section
+                        with st.expander("🔧 QC Override (Staff Validation)", expanded=False):
+                            st.markdown("**Override QC status for validation purposes.** Staff can force pass QC when clinical judgment warrants it.")
+                            with get_db_connection() as qc_conn:
+                                qc_query = """
+                                    SELECT r.id, r.qc_status, r.qc_override, r.qc_override_reason,
+                                           r.qc_override_at, u.full_name as override_by
+                                    FROM results r
+                                    LEFT JOIN users u ON r.qc_override_by = u.id
+                                    WHERE r.patient_id = ?
+                                    ORDER BY r.created_at DESC
+                                """
+                                qc_results = pd.read_sql(qc_query, qc_conn, params=(patient_id,))
+
+                            if not qc_results.empty:
+                                for _, qc_row in qc_results.iterrows():
+                                    result_id = qc_row['id']
+                                    original_status = qc_row['qc_status']
+                                    is_overridden = bool(qc_row.get('qc_override'))
+
+                                    st.markdown(f"**Result ID: {result_id}** - Original QC: `{original_status}`")
+
+                                    if is_overridden:
+                                        st.success(f"✅ QC Overridden to PASS by {qc_row.get('override_by', 'Unknown')}")
+                                        st.caption(f"Reason: {qc_row.get('qc_override_reason', 'N/A')}")
+                                        st.caption(f"Override date: {qc_row.get('qc_override_at', 'N/A')[:16] if qc_row.get('qc_override_at') else 'N/A'}")
+                                        if st.button(f"Remove Override", key=f"remove_override_{result_id}"):
+                                            ok, msg = remove_qc_override(result_id, st.session_state.user['id'])
+                                            if ok:
+                                                st.success(msg)
+                                                st.rerun()
+                                            else:
+                                                st.error(msg)
+                                    else:
+                                        if original_status in ['FAIL', 'WARNING']:
+                                            with st.form(key=f"override_form_{result_id}"):
+                                                override_reason = st.text_input(
+                                                    "Override Reason (required)",
+                                                    placeholder="e.g., Clinical judgment, repeat testing confirms negative",
+                                                    key=f"reason_{result_id}"
+                                                )
+                                                if st.form_submit_button(f"Override QC to PASS"):
+                                                    if override_reason.strip():
+                                                        ok, msg = override_qc_status(result_id, override_reason.strip(), st.session_state.user['id'])
+                                                        if ok:
+                                                            st.success(msg)
+                                                            st.rerun()
+                                                        else:
+                                                            st.error(msg)
+                                                    else:
+                                                        st.error("Please provide a reason for the override")
+                                        else:
+                                            st.info("QC already PASS - no override needed")
+                                    st.divider()
         else:
             st.info("No records found")
     
