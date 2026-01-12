@@ -430,44 +430,100 @@ def analyze_cnv(size: float, ratio: float) -> Tuple[str, float, str]:
     return "Low Risk", threshold, "LOW"
 
 def override_qc_status(result_id: int, reason: str, user_id: int) -> Tuple[bool, str]:
-    """Override QC status to PASS for a result. Staff validation feature."""
+    """Override QC status to PASS for a result. Staff validation feature.
+
+    Also updates final_summary to reflect the override - removes QC FAIL status
+    and recalculates based on the actual test results.
+    """
     try:
         with get_db_connection() as conn:
             c = conn.cursor()
+
+            # First, get the current result data to recalculate final_summary
+            c.execute("""
+                SELECT t21_res, t18_res, t13_res, sca_res, cnv_json, rat_json, final_summary
+                FROM results WHERE id = ?
+            """, (result_id,))
+            row = c.fetchone()
+            if not row:
+                return False, "Result not found"
+
+            t21_res, t18_res, t13_res, sca_res, cnv_json, rat_json, old_summary = row
+
+            # Recalculate final_summary based on actual test results (ignoring QC status)
+            all_results = [str(t21_res), str(t18_res), str(t13_res), str(sca_res)]
+            is_positive = any('POSITIVE' in r.upper() for r in all_results)
+            is_high_risk = any('HIGH' in r.upper() or 'RE-LIBRARY' in r.upper() or 'RESAMPLE' in r.upper() for r in all_results)
+
+            # Check CNV and RAT for high risk
+            try:
+                cnvs = json.loads(cnv_json) if cnv_json else []
+                rats = json.loads(rat_json) if rat_json else []
+                if cnvs or rats:
+                    is_high_risk = True
+            except:
+                pass
+
+            # Determine new final_summary
+            if is_positive:
+                new_summary = "POSITIVE DETECTED"
+            elif is_high_risk:
+                new_summary = "HIGH RISK (SEE ADVICE)"
+            else:
+                new_summary = "NEGATIVE"
+
             c.execute("""
                 UPDATE results
                 SET qc_override = 1,
                     qc_override_by = ?,
                     qc_override_reason = ?,
-                    qc_override_at = ?
+                    qc_override_at = ?,
+                    final_summary = ?
                 WHERE id = ?
-            """, (user_id, reason, datetime.now().isoformat(), result_id))
+            """, (user_id, reason, datetime.now().isoformat(), new_summary, result_id))
             if c.rowcount == 0:
                 return False, "Result not found"
             conn.commit()
-            log_audit("QC_OVERRIDE", f"QC override applied to result {result_id}: {reason}", user_id)
-            return True, "QC status overridden to PASS"
+            log_audit("QC_OVERRIDE", f"QC override applied to result {result_id}: {reason}. Summary changed from '{old_summary}' to '{new_summary}'", user_id)
+            return True, f"QC status overridden to PASS. Final summary updated to '{new_summary}'"
     except Exception as e:
         return False, f"Override failed: {str(e)}"
 
 def remove_qc_override(result_id: int, user_id: int) -> Tuple[bool, str]:
-    """Remove QC override from a result."""
+    """Remove QC override from a result.
+
+    Also restores the final_summary to 'INVALID (QC FAIL)' since the QC failure
+    is no longer being overridden.
+    """
     try:
         with get_db_connection() as conn:
             c = conn.cursor()
+
+            # Get current qc_status to determine if we need to restore QC FAIL summary
+            c.execute("SELECT qc_status, final_summary FROM results WHERE id = ?", (result_id,))
+            row = c.fetchone()
+            if not row:
+                return False, "Result not found"
+
+            qc_status, current_summary = row
+
+            # If original QC was FAIL, restore the final_summary to INVALID (QC FAIL)
+            new_summary = "INVALID (QC FAIL)" if qc_status == "FAIL" else current_summary
+
             c.execute("""
                 UPDATE results
                 SET qc_override = 0,
                     qc_override_by = NULL,
                     qc_override_reason = NULL,
-                    qc_override_at = NULL
+                    qc_override_at = NULL,
+                    final_summary = ?
                 WHERE id = ?
-            """, (result_id,))
+            """, (new_summary, result_id))
             if c.rowcount == 0:
                 return False, "Result not found"
             conn.commit()
-            log_audit("QC_OVERRIDE_REMOVED", f"QC override removed from result {result_id}", user_id)
-            return True, "QC override removed"
+            log_audit("QC_OVERRIDE_REMOVED", f"QC override removed from result {result_id}. Summary restored to '{new_summary}'", user_id)
+            return True, f"QC override removed. Final summary restored to '{new_summary}'"
     except Exception as e:
         return False, f"Remove override failed: {str(e)}"
 
@@ -2749,7 +2805,7 @@ def main():
         with get_db_connection() as conn:
             query = """
                 SELECT r.id, r.created_at, p.full_name, p.mrn_id, r.panel_type,
-                       r.qc_status, r.final_summary
+                       r.qc_status, r.final_summary, r.full_z_json, r.t21_res
                 FROM results r
                 JOIN patients p ON p.id = r.patient_id
                 WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
@@ -2764,7 +2820,25 @@ def main():
 
             df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%Y-%m-%d %H:%M')
 
-            st.dataframe(df, use_container_width=True, height=400)
+            # Extract T21 Z-score from full_z_json for display
+            def extract_t21_z(z_json):
+                try:
+                    if z_json and z_json != '{}':
+                        z_data = json.loads(z_json)
+                        z21 = z_data.get('21', z_data.get(21, None))
+                        if z21 is not None:
+                            return f"{float(z21):.2f}"
+                except:
+                    pass
+                return 'N/A'
+
+            df['T21_Z'] = df['full_z_json'].apply(extract_t21_z)
+
+            # Reorder columns for display (exclude raw JSON column)
+            display_df = df[['id', 'created_at', 'full_name', 'mrn_id', 'panel_type', 'qc_status', 't21_res', 'T21_Z', 'final_summary']]
+            display_df.columns = ['ID', 'Date', 'Name', 'MRN', 'Panel', 'QC', 'T21 Result', 'T21 Z-Score', 'Final Summary']
+
+            st.dataframe(display_df, use_container_width=True, height=400)
 
             st.divider()
 
@@ -3015,6 +3089,27 @@ def main():
                                         else:
                                             st.info("QC already PASS - no override needed")
                                     st.divider()
+
+                        # Delete Patient Section
+                        with st.expander("🗑️ Delete Patient", expanded=False):
+                            st.warning("**Warning:** This will permanently delete the patient and ALL their test results. This action cannot be undone.")
+
+                            # Show how many results will be deleted
+                            with get_db_connection() as del_conn:
+                                result_count_query = "SELECT COUNT(*) FROM results WHERE patient_id = ?"
+                                result_count = pd.read_sql(result_count_query, del_conn, params=(patient_id,)).iloc[0, 0]
+
+                            st.info(f"This patient has **{result_count}** test result(s) that will be deleted.")
+
+                            confirm_delete = st.checkbox(f"I confirm I want to permanently delete patient '{patient_details['mrn']}'", key=f"confirm_del_{patient_id}")
+
+                            if st.button("🗑️ Delete Patient Permanently", type="secondary", disabled=not confirm_delete, key=f"delete_patient_{patient_id}"):
+                                ok, msg = delete_patient(patient_id, hard_delete=True)
+                                if ok:
+                                    st.success(msg)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
         else:
             st.info("No records found")
     
