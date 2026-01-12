@@ -2287,305 +2287,335 @@ def main():
             """)
             
             uploaded_pdfs = st.file_uploader(
-                "Upload PDF Report(s)", 
-                type=['pdf'], 
+                "Upload PDF Report(s)",
+                type=['pdf'],
                 accept_multiple_files=True,
                 help="Select one or more PDF files - they will be grouped by patient file number"
             )
-            
+
+            # Helper functions defined at module level for reuse
+            def safe_int(val, default=0):
+                try:
+                    return int(val) if val and val > 0 else default
+                except (TypeError, ValueError):
+                    return default
+
+            def safe_float(val, default=0.0):
+                try:
+                    return float(val) if val and val > 0 else default
+                except (TypeError, ValueError):
+                    return default
+
             if uploaded_pdfs:
                 st.info(f"📁 {len(uploaded_pdfs)} file(s) selected")
-                
+
                 if st.button("🔍 Extract & Preview Data", type="primary"):
                     with st.spinner("Extracting comprehensive data from PDFs..."):
                         result = parse_pdf_batch(uploaded_pdfs)
-                    
+
                     patients = result['patients']
                     errors = result['errors']
-                    
-                    if errors:
-                        st.warning(f"⚠️ {len(errors)} file(s) had issues:")
-                        for err in errors:
-                            st.caption(f"• {err}")
-                    
-                    if patients:
-                        st.success(f"✅ Extracted data for {len(patients)} patient(s)")
-                        st.info("📝 **Edit Mode**: You can modify any extracted values before importing. Changes are saved when you click 'Confirm & Import'.")
 
-                        # Store patients data in session state for import
-                        st.session_state.pdf_import_data = patients
+                    # Store in session state for persistence across reruns
+                    st.session_state.pdf_import_data = patients
+                    st.session_state.pdf_import_errors = errors
+                    st.rerun()
 
-                        # Check for duplicates and show warnings
-                        for mrn in patients.keys():
-                            exists, existing_patient = check_duplicate_patient(mrn)
-                            if exists:
-                                st.warning(f"⚠️ Patient ID '{mrn}' already exists as '{existing_patient['name']}' "
-                                          f"with {existing_patient['result_count']} result(s). "
-                                          f"Importing will add new results to existing patient record.")
+            # Display extracted data from session state (persists across button clicks)
+            if 'pdf_import_data' in st.session_state and st.session_state.pdf_import_data:
+                patients = st.session_state.pdf_import_data
+                errors = st.session_state.get('pdf_import_errors', [])
 
-                        # Helper function to safely get values with defaults
-                        def safe_int(val, default=0):
-                            try:
-                                return int(val) if val and val > 0 else default
-                            except (TypeError, ValueError):
-                                return default
+                if errors:
+                    st.warning(f"⚠️ {len(errors)} file(s) had issues:")
+                    for err in errors:
+                        st.caption(f"• {err}")
 
-                        def safe_float(val, default=0.0):
-                            try:
-                                return float(val) if val and val > 0 else default
-                            except (TypeError, ValueError):
-                                return default
+                st.success(f"✅ Extracted data for {len(patients)} patient(s)")
+                st.info("📝 **Edit Mode**: You can modify any extracted values before importing. Changes are saved when you click 'Confirm & Import'.")
 
-                        # Show patients grouped by MRN with editable fields using forms
+                # Check for duplicates and show warnings/errors
+                duplicate_mrns = []
+                for mrn in patients.keys():
+                    exists, existing_patient = check_duplicate_patient(mrn)
+                    if exists:
+                        duplicate_mrns.append(mrn)
+                        st.error(f"🚫 Patient ID '{mrn}' already exists as '{existing_patient['name']}' "
+                                  f"with {existing_patient['result_count']} result(s). "
+                                  f"This patient will be SKIPPED during import (Patient ID must be unique).")
+
+                # Show patients grouped by MRN with editable fields using forms
+                for mrn, records in patients.items():
+                    is_duplicate = mrn in duplicate_mrns
+                    expander_title = f"📋 Patient: {mrn} - {records[0]['patient_name']} ({len(records)} file(s))"
+                    if is_duplicate:
+                        expander_title = f"🚫 [DUPLICATE] {expander_title}"
+
+                    with st.expander(expander_title, expanded=not is_duplicate):
+                        if is_duplicate:
+                            st.error("This patient ID already exists in the registry and will be skipped.")
+
+                        for idx, record in enumerate(records, 1):
+                            edit_key = f"{mrn}_{idx}"
+                            st.markdown(f"**File {idx}: {record['source_file']}**")
+
+                            # Use form to prevent crashes on edit
+                            with st.form(key=f"form_{edit_key}"):
+                                st.markdown("##### Patient Information")
+                                p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+                                with p_col1:
+                                    edit_name = st.text_input("Name", value=record.get('patient_name', ''))
+                                with p_col2:
+                                    edit_age = st.number_input("Age", min_value=15, max_value=60,
+                                        value=safe_int(record.get('age'), 30))
+                                with p_col3:
+                                    edit_weeks = st.number_input("Weeks", min_value=9, max_value=24,
+                                        value=safe_int(record.get('weeks'), 12))
+                                with p_col4:
+                                    panel_options = ["NIPT Basic", "NIPT Standard", "NIPT Plus", "NIPT Pro"]
+                                    current_panel = record.get('panel', 'NIPT Standard')
+                                    panel_idx = panel_options.index(current_panel) if current_panel in panel_options else 1
+                                    edit_panel = st.selectbox("Panel", panel_options, index=panel_idx)
+
+                                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                                with m_col1:
+                                    edit_weight = st.number_input("Weight (kg)", min_value=30.0, max_value=200.0,
+                                        value=safe_float(record.get('weight'), 65.0))
+                                with m_col2:
+                                    edit_height = st.number_input("Height (cm)", min_value=100, max_value=220,
+                                        value=safe_int(record.get('height'), 165))
+                                with m_col3:
+                                    if edit_weight > 0 and edit_height > 0:
+                                        edit_bmi = round(edit_weight / ((edit_height/100)**2), 1)
+                                        st.metric("BMI (auto)", edit_bmi)
+                                    else:
+                                        edit_bmi = 0.0
+                                        st.metric("BMI", "N/A")
+                                with m_col4:
+                                    sca_options = ["XX", "XY", "XO", "XXX", "XXY", "XYY"]
+                                    current_sca = record.get('sca_type', 'XX')
+                                    sca_idx = sca_options.index(current_sca) if current_sca in sca_options else 0
+                                    edit_sca = st.selectbox("SCA Type", sca_options, index=sca_idx)
+
+                                st.markdown("##### Sequencing Metrics")
+                                q_col1, q_col2, q_col3, q_col4, q_col5, q_col6 = st.columns(6)
+                                with q_col1:
+                                    edit_reads = st.number_input("Reads (M)", min_value=0.0, max_value=100.0,
+                                        value=safe_float(record.get('reads'), 10.0))
+                                with q_col2:
+                                    edit_cff = st.number_input("Cff %", min_value=0.0, max_value=50.0,
+                                        value=safe_float(record.get('cff'), 10.0))
+                                with q_col3:
+                                    edit_gc = st.number_input("GC %", min_value=0.0, max_value=100.0,
+                                        value=safe_float(record.get('gc'), 41.0))
+                                with q_col4:
+                                    edit_qs = st.number_input("QS", min_value=0.0, max_value=10.0,
+                                        value=safe_float(record.get('qs'), 1.0))
+                                with q_col5:
+                                    edit_uniq = st.number_input("Unique %", min_value=0.0, max_value=100.0,
+                                        value=safe_float(record.get('unique_rate'), 80.0))
+                                with q_col6:
+                                    edit_error = st.number_input("Error %", min_value=0.0, max_value=10.0,
+                                        value=safe_float(record.get('error_rate'), 0.2))
+
+                                st.markdown("##### Z-Scores (Trisomies)")
+                                z_col1, z_col2, z_col3, z_col4, z_col5 = st.columns(5)
+                                z_scores_orig = record.get('z_scores', {})
+                                with z_col1:
+                                    edit_z21 = st.number_input("Z-21", min_value=-10.0, max_value=20.0,
+                                        value=safe_float(z_scores_orig.get(21, z_scores_orig.get('21', 0.0))), format="%.2f")
+                                with z_col2:
+                                    edit_z18 = st.number_input("Z-18", min_value=-10.0, max_value=20.0,
+                                        value=safe_float(z_scores_orig.get(18, z_scores_orig.get('18', 0.0))), format="%.2f")
+                                with z_col3:
+                                    edit_z13 = st.number_input("Z-13", min_value=-10.0, max_value=20.0,
+                                        value=safe_float(z_scores_orig.get(13, z_scores_orig.get('13', 0.0))), format="%.2f")
+                                with z_col4:
+                                    edit_zxx = st.number_input("Z-XX", min_value=-10.0, max_value=20.0,
+                                        value=safe_float(z_scores_orig.get('XX', 0.0)), format="%.2f")
+                                with z_col5:
+                                    edit_zxy = st.number_input("Z-XY", min_value=-10.0, max_value=20.0,
+                                        value=safe_float(z_scores_orig.get('XY', 0.0)), format="%.2f")
+
+                                edit_notes = st.text_area("Clinical Notes",
+                                    value=record.get('notes', ''),
+                                    help="Enter clinical observations like NT measurements, ultrasound findings, etc.")
+
+                                # Save form data button
+                                if st.form_submit_button("💾 Save Changes for this Record"):
+                                    # Store edited data in session state
+                                    if 'pdf_edit_data' not in st.session_state:
+                                        st.session_state.pdf_edit_data = {}
+                                    st.session_state.pdf_edit_data[edit_key] = {
+                                        'patient_name': edit_name,
+                                        'age': edit_age,
+                                        'weeks': edit_weeks,
+                                        'panel': edit_panel,
+                                        'weight': edit_weight,
+                                        'height': edit_height,
+                                        'bmi': edit_bmi,
+                                        'sca_type': edit_sca,
+                                        'reads': edit_reads,
+                                        'cff': edit_cff,
+                                        'gc': edit_gc,
+                                        'qs': edit_qs,
+                                        'unique_rate': edit_uniq,
+                                        'error_rate': edit_error,
+                                        'z_scores': {21: edit_z21, 18: edit_z18, 13: edit_z13, 'XX': edit_zxx, 'XY': edit_zxy},
+                                        'notes': edit_notes,
+                                        'cnv_findings': record.get('cnv_findings', []),
+                                        'rat_findings': record.get('rat_findings', []),
+                                        'source_file': record.get('source_file', '')
+                                    }
+                                    st.success(f"✅ Changes saved for {edit_name}")
+
+                            # Show CNV/RAT findings outside form
+                            if record.get('cnv_findings') or record.get('rat_findings'):
+                                with st.expander("View CNV/RAT Findings"):
+                                    if record.get('cnv_findings'):
+                                        st.markdown("**CNV Findings:**")
+                                        for cnv in record['cnv_findings']:
+                                            st.caption(f"• Size: {cnv['size']} Mb, Ratio: {cnv['ratio']}%")
+                                    if record.get('rat_findings'):
+                                        st.markdown("**RAT Findings:**")
+                                        for rat in record['rat_findings']:
+                                            st.caption(f"• Chr {rat['chr']}: Z = {rat['z']}")
+
+                            st.divider()
+
+                st.warning("⚠️ Click 'Save Changes' in each record form to save edits, then click 'Import All' below")
+                if duplicate_mrns:
+                    st.error(f"⚠️ {len(duplicate_mrns)} patient(s) with duplicate IDs will be SKIPPED: {', '.join(duplicate_mrns)}")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("✅ Confirm & Import All to Registry", type="primary"):
+                        success, fail, skipped = 0, 0, 0
+                        config = load_config()
+                        edit_data = st.session_state.get('pdf_edit_data', {})
+
                         for mrn, records in patients.items():
-                            with st.expander(f"📋 Patient: {mrn} - {records[0]['patient_name']} ({len(records)} file(s))", expanded=True):
-                                for idx, record in enumerate(records, 1):
+                            # Skip duplicate patient IDs - enforce uniqueness
+                            exists, _ = check_duplicate_patient(mrn)
+                            if exists:
+                                skipped += len(records)
+                                st.warning(f"⚠️ Skipped patient ID '{mrn}' - already exists in registry")
+                                continue
+
+                            for idx, original_data in enumerate(records, 1):
+                                try:
                                     edit_key = f"{mrn}_{idx}"
-                                    st.markdown(f"**File {idx}: {record['source_file']}**")
+                                    # Use edited data if available, otherwise use original
+                                    data = edit_data.get(edit_key, original_data)
 
-                                    # Use form to prevent crashes on edit
-                                    with st.form(key=f"form_{edit_key}"):
-                                        st.markdown("##### Patient Information")
-                                        p_col1, p_col2, p_col3, p_col4 = st.columns(4)
-                                        with p_col1:
-                                            edit_name = st.text_input("Name", value=record.get('patient_name', ''))
-                                        with p_col2:
-                                            edit_age = st.number_input("Age", min_value=15, max_value=60,
-                                                value=safe_int(record.get('age'), 30))
-                                        with p_col3:
-                                            edit_weeks = st.number_input("Weeks", min_value=9, max_value=24,
-                                                value=safe_int(record.get('weeks'), 12))
-                                        with p_col4:
-                                            panel_options = ["NIPT Basic", "NIPT Standard", "NIPT Plus", "NIPT Pro"]
-                                            current_panel = record.get('panel', 'NIPT Standard')
-                                            panel_idx = panel_options.index(current_panel) if current_panel in panel_options else 1
-                                            edit_panel = st.selectbox("Panel", panel_options, index=panel_idx)
+                                    # Get Z-scores
+                                    z_scores = data.get('z_scores', {})
+                                    z_21 = safe_float(z_scores.get(21, z_scores.get('21', 0.0)))
+                                    z_18 = safe_float(z_scores.get(18, z_scores.get('18', 0.0)))
+                                    z_13 = safe_float(z_scores.get(13, z_scores.get('13', 0.0)))
+                                    z_xx = safe_float(z_scores.get('XX', 0.0))
+                                    z_xy = safe_float(z_scores.get('XY', 0.0))
 
-                                        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-                                        with m_col1:
-                                            edit_weight = st.number_input("Weight (kg)", min_value=30.0, max_value=200.0,
-                                                value=safe_float(record.get('weight'), 65.0))
-                                        with m_col2:
-                                            edit_height = st.number_input("Height (cm)", min_value=100, max_value=220,
-                                                value=safe_int(record.get('height'), 165))
-                                        with m_col3:
-                                            if edit_weight > 0 and edit_height > 0:
-                                                edit_bmi = round(edit_weight / ((edit_height/100)**2), 1)
-                                                st.metric("BMI (auto)", edit_bmi)
-                                            else:
-                                                edit_bmi = 0.0
-                                                st.metric("BMI", "N/A")
-                                        with m_col4:
-                                            sca_options = ["XX", "XY", "XO", "XXX", "XXY", "XYY"]
-                                            current_sca = record.get('sca_type', 'XX')
-                                            sca_idx = sca_options.index(current_sca) if current_sca in sca_options else 0
-                                            edit_sca = st.selectbox("SCA Type", sca_options, index=sca_idx)
+                                    # Analyze
+                                    t21, _ = analyze_trisomy(config, z_21, "21")
+                                    t18, _ = analyze_trisomy(config, z_18, "18")
+                                    t13, _ = analyze_trisomy(config, z_13, "13")
+                                    cff_val = safe_float(data.get('cff'), 10.0)
+                                    sca, _ = analyze_sca(config, data.get('sca_type', 'XX'), z_xx, z_xy, cff_val)
 
-                                        st.markdown("##### Sequencing Metrics")
-                                        q_col1, q_col2, q_col3, q_col4, q_col5, q_col6 = st.columns(6)
-                                        with q_col1:
-                                            edit_reads = st.number_input("Reads (M)", min_value=0.0, max_value=100.0,
-                                                value=safe_float(record.get('reads'), 10.0))
-                                        with q_col2:
-                                            edit_cff = st.number_input("Cff %", min_value=0.0, max_value=50.0,
-                                                value=safe_float(record.get('cff'), 10.0))
-                                        with q_col3:
-                                            edit_gc = st.number_input("GC %", min_value=0.0, max_value=100.0,
-                                                value=safe_float(record.get('gc'), 41.0))
-                                        with q_col4:
-                                            edit_qs = st.number_input("QS", min_value=0.0, max_value=10.0,
-                                                value=safe_float(record.get('qs'), 1.0))
-                                        with q_col5:
-                                            edit_uniq = st.number_input("Unique %", min_value=0.0, max_value=100.0,
-                                                value=safe_float(record.get('unique_rate'), 80.0))
-                                        with q_col6:
-                                            edit_error = st.number_input("Error %", min_value=0.0, max_value=10.0,
-                                                value=safe_float(record.get('error_rate'), 0.2))
+                                    # Process CNVs and RATs
+                                    analyzed_cnvs = []
+                                    for cnv in data.get('cnv_findings', []):
+                                        msg, _, _ = analyze_cnv(cnv['size'], cnv['ratio'])
+                                        analyzed_cnvs.append(f"{cnv['size']}Mb ({cnv['ratio']}%) -> {msg}")
 
-                                        st.markdown("##### Z-Scores (Trisomies)")
-                                        z_col1, z_col2, z_col3, z_col4, z_col5 = st.columns(5)
-                                        z_scores_orig = record.get('z_scores', {})
-                                        with z_col1:
-                                            edit_z21 = st.number_input("Z-21", min_value=-10.0, max_value=20.0,
-                                                value=safe_float(z_scores_orig.get(21, z_scores_orig.get('21', 0.0))), format="%.2f")
-                                        with z_col2:
-                                            edit_z18 = st.number_input("Z-18", min_value=-10.0, max_value=20.0,
-                                                value=safe_float(z_scores_orig.get(18, z_scores_orig.get('18', 0.0))), format="%.2f")
-                                        with z_col3:
-                                            edit_z13 = st.number_input("Z-13", min_value=-10.0, max_value=20.0,
-                                                value=safe_float(z_scores_orig.get(13, z_scores_orig.get('13', 0.0))), format="%.2f")
-                                        with z_col4:
-                                            edit_zxx = st.number_input("Z-XX", min_value=-10.0, max_value=20.0,
-                                                value=safe_float(z_scores_orig.get('XX', 0.0)), format="%.2f")
-                                        with z_col5:
-                                            edit_zxy = st.number_input("Z-XY", min_value=-10.0, max_value=20.0,
-                                                value=safe_float(z_scores_orig.get('XY', 0.0)), format="%.2f")
+                                    analyzed_rats = []
+                                    for rat in data.get('rat_findings', []):
+                                        msg, _ = analyze_rat(config, rat['chr'], rat['z'])
+                                        analyzed_rats.append(f"Chr {rat['chr']} (Z:{rat['z']}) -> {msg}")
 
-                                        edit_notes = st.text_area("Clinical Notes",
-                                            value=record.get('notes', ''),
-                                            help="Enter clinical observations like NT measurements, ultrasound findings, etc.")
+                                    # Run QC
+                                    reads_val = safe_float(data.get('reads'), 10.0)
+                                    gc_val = safe_float(data.get('gc'), 41.0)
+                                    qs_val = safe_float(data.get('qs'), 1.0)
+                                    uniq_val = safe_float(data.get('unique_rate'), 80.0)
+                                    error_val = safe_float(data.get('error_rate'), 0.2)
 
-                                        # Save form data button
-                                        if st.form_submit_button("💾 Save Changes for this Record"):
-                                            # Store edited data in session state
-                                            if 'pdf_edit_data' not in st.session_state:
-                                                st.session_state.pdf_edit_data = {}
-                                            st.session_state.pdf_edit_data[edit_key] = {
-                                                'patient_name': edit_name,
-                                                'age': edit_age,
-                                                'weeks': edit_weeks,
-                                                'panel': edit_panel,
-                                                'weight': edit_weight,
-                                                'height': edit_height,
-                                                'bmi': edit_bmi,
-                                                'sca_type': edit_sca,
-                                                'reads': edit_reads,
-                                                'cff': edit_cff,
-                                                'gc': edit_gc,
-                                                'qs': edit_qs,
-                                                'unique_rate': edit_uniq,
-                                                'error_rate': edit_error,
-                                                'z_scores': {21: edit_z21, 18: edit_z18, 13: edit_z13, 'XX': edit_zxx, 'XY': edit_zxy},
-                                                'notes': edit_notes,
-                                                'cnv_findings': record.get('cnv_findings', []),
-                                                'rat_findings': record.get('rat_findings', []),
-                                                'source_file': record.get('source_file', '')
-                                            }
-                                            st.success(f"✅ Changes saved for {edit_name}")
+                                    qc_s, qc_m, qc_a = check_qc_metrics(
+                                        config, data.get('panel', 'NIPT Standard'),
+                                        reads_val, cff_val, gc_val, qs_val, uniq_val, error_val, False
+                                    )
 
-                                    # Show CNV/RAT findings outside form
-                                    if record.get('cnv_findings') or record.get('rat_findings'):
-                                        with st.expander("View CNV/RAT Findings"):
-                                            if record.get('cnv_findings'):
-                                                st.markdown("**CNV Findings:**")
-                                                for cnv in record['cnv_findings']:
-                                                    st.caption(f"• Size: {cnv['size']} Mb, Ratio: {cnv['ratio']}%")
-                                            if record.get('rat_findings'):
-                                                st.markdown("**RAT Findings:**")
-                                                for rat in record['rat_findings']:
-                                                    st.caption(f"• Chr {rat['chr']}: Z = {rat['z']}")
+                                    # Determine final result
+                                    final = "NEGATIVE"
+                                    if "POSITIVE" in (t21 + t18 + t13 + sca):
+                                        final = "POSITIVE DETECTED"
+                                    if qc_s == "FAIL":
+                                        final = "INVALID (QC FAIL)"
 
-                                    st.divider()
+                                    p_data = {
+                                        'name': data.get('patient_name', 'Unknown'),
+                                        'id': mrn,
+                                        'age': safe_int(data.get('age'), 30),
+                                        'weight': safe_float(data.get('weight'), 65.0),
+                                        'height': safe_int(data.get('height'), 165),
+                                        'bmi': safe_float(data.get('bmi'), 0.0),
+                                        'weeks': safe_int(data.get('weeks'), 12),
+                                        'notes': f"Imported from: {data.get('source_file', 'PDF')}. {data.get('notes', '')}"
+                                    }
 
-                        st.warning("⚠️ Click 'Save Changes' in each record form to save edits, then click 'Import All' below")
+                                    r_data = {
+                                        'panel': data.get('panel', 'NIPT Standard'),
+                                        'qc_status': qc_s,
+                                        'qc_msgs': qc_m,
+                                        'qc_advice': qc_a
+                                    }
 
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if st.button("✅ Confirm & Import All to Registry", type="primary"):
-                                success, fail = 0, 0
-                                config = load_config()
-                                edit_data = st.session_state.get('pdf_edit_data', {})
+                                    c_data = {
+                                        't21': t21, 't18': t18, 't13': t13, 'sca': sca,
+                                        'cnv_list': analyzed_cnvs, 'rat_list': analyzed_rats, 'final': final
+                                    }
 
-                                for mrn, records in patients.items():
-                                    for idx, original_data in enumerate(records, 1):
-                                        try:
-                                            edit_key = f"{mrn}_{idx}"
-                                            # Use edited data if available, otherwise use original
-                                            data = edit_data.get(edit_key, original_data)
+                                    full_z = {21: z_21, 18: z_18, 13: z_13, 'XX': z_xx, 'XY': z_xy}
 
-                                            # Get Z-scores
-                                            z_scores = data.get('z_scores', {})
-                                            z_21 = safe_float(z_scores.get(21, z_scores.get('21', 0.0)))
-                                            z_18 = safe_float(z_scores.get(18, z_scores.get('18', 0.0)))
-                                            z_13 = safe_float(z_scores.get(13, z_scores.get('13', 0.0)))
-                                            z_xx = safe_float(z_scores.get('XX', 0.0))
-                                            z_xy = safe_float(z_scores.get('XY', 0.0))
+                                    # QC metrics for PDF report
+                                    qc_metrics = {
+                                        'reads': reads_val, 'cff': cff_val, 'gc': gc_val,
+                                        'qs': qs_val, 'unique_rate': uniq_val, 'error_rate': error_val
+                                    }
 
-                                            # Analyze
-                                            t21, _ = analyze_trisomy(config, z_21, "21")
-                                            t18, _ = analyze_trisomy(config, z_18, "18")
-                                            t13, _ = analyze_trisomy(config, z_13, "13")
-                                            cff_val = safe_float(data.get('cff'), 10.0)
-                                            sca, _ = analyze_sca(config, data.get('sca_type', 'XX'), z_xx, z_xy, cff_val)
+                                    # Use allow_duplicate=False to enforce uniqueness
+                                    rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics, allow_duplicate=False)
+                                    if rid:
+                                        success += 1
+                                    else:
+                                        st.warning(f"⚠️ {data.get('patient_name', 'Unknown')}: {msg}")
+                                        fail += 1
 
-                                            # Process CNVs and RATs
-                                            analyzed_cnvs = []
-                                            for cnv in data.get('cnv_findings', []):
-                                                msg, _, _ = analyze_cnv(cnv['size'], cnv['ratio'])
-                                                analyzed_cnvs.append(f"{cnv['size']}Mb ({cnv['ratio']}%) -> {msg}")
+                                except Exception as e:
+                                    st.error(f"Failed to import {data.get('patient_name', 'Unknown')}: {e}")
+                                    fail += 1
 
-                                            analyzed_rats = []
-                                            for rat in data.get('rat_findings', []):
-                                                msg, _ = analyze_rat(config, rat['chr'], rat['z'])
-                                                analyzed_rats.append(f"Chr {rat['chr']} (Z:{rat['z']}) -> {msg}")
+                        result_msg = f"✅ Import Complete: {success} records imported"
+                        if fail > 0:
+                            result_msg += f", {fail} failed"
+                        if skipped > 0:
+                            result_msg += f", {skipped} skipped (duplicate IDs)"
+                        st.success(result_msg)
+                        log_audit("PDF_IMPORT", f"Imported {success} records, {fail} failed, {skipped} skipped (duplicates)",
+                                 st.session_state.user['id'])
 
-                                            # Run QC
-                                            reads_val = safe_float(data.get('reads'), 10.0)
-                                            gc_val = safe_float(data.get('gc'), 41.0)
-                                            qs_val = safe_float(data.get('qs'), 1.0)
-                                            uniq_val = safe_float(data.get('unique_rate'), 80.0)
-                                            error_val = safe_float(data.get('error_rate'), 0.2)
+                        # Clean up session state
+                        for key in ['pdf_import_data', 'pdf_edit_data', 'pdf_import_errors']:
+                            if key in st.session_state:
+                                del st.session_state[key]
 
-                                            qc_s, qc_m, qc_a = check_qc_metrics(
-                                                config, data.get('panel', 'NIPT Standard'),
-                                                reads_val, cff_val, gc_val, qs_val, uniq_val, error_val, False
-                                            )
-
-                                            # Determine final result
-                                            final = "NEGATIVE"
-                                            if "POSITIVE" in (t21 + t18 + t13 + sca):
-                                                final = "POSITIVE DETECTED"
-                                            if qc_s == "FAIL":
-                                                final = "INVALID (QC FAIL)"
-
-                                            p_data = {
-                                                'name': data.get('patient_name', 'Unknown'),
-                                                'id': mrn,
-                                                'age': safe_int(data.get('age'), 30),
-                                                'weight': safe_float(data.get('weight'), 65.0),
-                                                'height': safe_int(data.get('height'), 165),
-                                                'bmi': safe_float(data.get('bmi'), 0.0),
-                                                'weeks': safe_int(data.get('weeks'), 12),
-                                                'notes': f"Imported from: {data.get('source_file', 'PDF')}. {data.get('notes', '')}"
-                                            }
-
-                                            r_data = {
-                                                'panel': data.get('panel', 'NIPT Standard'),
-                                                'qc_status': qc_s,
-                                                'qc_msgs': qc_m,
-                                                'qc_advice': qc_a
-                                            }
-
-                                            c_data = {
-                                                't21': t21, 't18': t18, 't13': t13, 'sca': sca,
-                                                'cnv_list': analyzed_cnvs, 'rat_list': analyzed_rats, 'final': final
-                                            }
-
-                                            full_z = {21: z_21, 18: z_18, 13: z_13, 'XX': z_xx, 'XY': z_xy}
-
-                                            # QC metrics for PDF report
-                                            qc_metrics = {
-                                                'reads': reads_val, 'cff': cff_val, 'gc': gc_val,
-                                                'qs': qs_val, 'unique_rate': uniq_val, 'error_rate': error_val
-                                            }
-
-                                            rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics)
-                                            if rid:
-                                                success += 1
-                                            else:
-                                                st.warning(f"⚠️ {data.get('patient_name', 'Unknown')}: {msg}")
-
-                                        except Exception as e:
-                                            st.error(f"Failed to import {data.get('patient_name', 'Unknown')}: {e}")
-                                            fail += 1
-
-                                st.success(f"✅ Import Complete: {success} records imported, {fail} failed")
-                                log_audit("PDF_IMPORT", f"Imported {success} records from {len(uploaded_pdfs)} PDFs",
-                                         st.session_state.user['id'])
-
-                                # Clean up
-                                for key in ['pdf_import_data', 'pdf_edit_data']:
-                                    if key in st.session_state:
-                                        del st.session_state[key]
-
-                        with col2:
-                            if st.button("❌ Cancel"):
-                                for key in ['pdf_import_data', 'pdf_edit_data']:
-                                    if key in st.session_state:
-                                        del st.session_state[key]
-                                st.rerun()
-                    else:
-                        st.error("❌ Could not extract data from any PDFs")
+                with col2:
+                    if st.button("❌ Cancel"):
+                        for key in ['pdf_import_data', 'pdf_edit_data', 'pdf_import_errors']:
+                            if key in st.session_state:
+                                del st.session_state[key]
+                        st.rerun()
             
             st.divider()
             st.markdown("""
