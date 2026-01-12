@@ -41,6 +41,7 @@ CONFIG_FILE = "nris_config.json"
 DEFAULT_CONFIG = {
     'QC_THRESHOLDS': {
         'MIN_CFF': 3.5,
+        'MAX_CFF': 50.0,
         'GC_RANGE': [37.0, 44.0],
         'MIN_UNIQ_RATE': 68.0,
         'MAX_ERROR_RATE': 1.0,
@@ -359,6 +360,11 @@ def check_qc_metrics(config: Dict, panel: str, reads: float, cff: float, gc: flo
         issues.append(f"HARD: Cff {cff}% < {thresholds['MIN_CFF']}%")
         advice.append("Resample")
 
+    max_cff = thresholds.get('MAX_CFF', 50.0)
+    if cff > max_cff:
+        issues.append(f"HARD: Cff {cff}% > {max_cff}%")
+        advice.append("Resample")
+
     gc_range = thresholds['GC_RANGE']
     if not (gc_range[0] <= gc <= gc_range[1]):
         issues.append(f"HARD: GC {gc}% out of range")
@@ -391,25 +397,42 @@ def analyze_trisomy(config: Dict, z_score: float, chrom: str) -> Tuple[str, str]
     return "POSITIVE -> Report Positive", "POSITIVE"
 
 def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: float) -> Tuple[str, str]:
-    """Enhanced SCA analysis."""
-    if cff < config['QC_THRESHOLDS']['MIN_CFF']: 
+    """Enhanced SCA analysis based on GeneMind NIPT guidelines.
+
+    SCA decision logic per document:
+    - XX/XY: Report Negative
+    - XYY/XXY/XXX+XY: Report Positive
+    - XO: If Z-score(XX) >= 4.5, report XO; else re-library
+    - XXX: If Z-score(XX) >= 4.5, report XXX; else re-library
+    - XO+XY: If Z-score(XY) >= 6, report XO+XY; else re-library
+    """
+    if cff < config['QC_THRESHOLDS']['MIN_CFF']:
         return "INVALID (Cff < 3.5%)", "INVALID"
-    
-    threshold = config['CLINICAL_THRESHOLDS']['SCA_THRESHOLD']
-    
+
+    threshold = config['CLINICAL_THRESHOLDS']['SCA_THRESHOLD']  # 4.5
+    xy_threshold = 6.0  # Threshold for XO+XY per document
+
     if sca_type == "XX": return "Negative (Female)", "LOW"
     if sca_type == "XY": return "Negative (Male)", "LOW"
-    
+
     if sca_type == "XO":
-        return ("POSITIVE (Turner XO)", "POSITIVE") if z_xx >= threshold else (f"Ambiguous XO", "HIGH")
-    
+        return ("POSITIVE (Turner XO)", "POSITIVE") if z_xx >= threshold else ("Ambiguous XO -> Re-library", "HIGH")
+
     if sca_type == "XXX":
-        return ("POSITIVE (Triple X)", "POSITIVE") if z_xx >= threshold else (f"Ambiguous XXX", "HIGH")
-        
-    if sca_type in ["XXY", "XYY"]: 
+        return ("POSITIVE (Triple X)", "POSITIVE") if z_xx >= threshold else ("Ambiguous XXX -> Re-library", "HIGH")
+
+    # XXX+XY: Always report positive per document
+    if sca_type == "XXX+XY":
+        return "POSITIVE (XXX+XY)", "POSITIVE"
+
+    # XO+XY: Check Z-score(XY) >= 6 per document
+    if sca_type == "XO+XY":
+        return ("POSITIVE (XO+XY)", "POSITIVE") if z_xy >= xy_threshold else ("Ambiguous XO+XY -> Re-library", "HIGH")
+
+    if sca_type in ["XXY", "XYY"]:
         return f"POSITIVE ({sca_type})", "POSITIVE"
-    
-    return "Ambiguous SCA", "HIGH"
+
+    return "Ambiguous SCA -> Re-library", "HIGH"
 
 def analyze_rat(config: Dict, chrom: int, z_score: float) -> Tuple[str, str]:
     """RAT analysis."""
@@ -1551,11 +1574,17 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
             data['z_scores']['XY'] = z_val
 
         # ===== SCA TYPE & FETAL SEX DETECTION =====
+        # Order matters: more specific patterns should come first
         sca_patterns = [
-            (r'Turner|Monosomy\s+X|45[,\s]*X(?:O)?', 'XO'),
-            (r'Triple\s+X|Trisomy\s+X|47[,\s]*XXX', 'XXX'),
+            # Composite/mosaicism patterns (must come before simple patterns)
+            (r'XXX\+XY|XXX\s*\+\s*XY|47[,\s]*XXX/46[,\s]*XY|Mosaicism.*XXX.*XY', 'XXX+XY'),
+            (r'XO\+XY|XO\s*\+\s*XY|45[,\s]*X/46[,\s]*XY|Mosaicism.*X[O0].*XY', 'XO+XY'),
+            # Standard abnormal patterns
+            (r'Turner|Monosomy\s+X|45[,\s]*X(?:O)?(?!\s*\+)', 'XO'),
+            (r'Triple\s+X|Trisomy\s+X|47[,\s]*XXX(?!\s*\+)', 'XXX'),
             (r'Klinefelter|47[,\s]*XXY', 'XXY'),
             (r'47[,\s]*XYY|Jacob(?:s)?(?:\s+syndrome)?', 'XYY'),
+            # Normal patterns
             (r'(?:Fetal\s+)?Sex[:\s]+Male|(?:Fetal\s+)?Gender[:\s]+Male|XY\s+(?:Male|detected)|Y\s+chromosome\s+(?:detected|present)', 'XY'),
             (r'(?:Fetal\s+)?Sex[:\s]+Female|(?:Fetal\s+)?Gender[:\s]+Female|XX\s+(?:Female|detected)|No\s+Y\s+chromosome', 'XX'),
         ]
@@ -1567,6 +1596,9 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
                     data['fetal_sex'] = 'Male'
                 elif sca_type in ['XX', 'XO', 'XXX']:
                     data['fetal_sex'] = 'Female'
+                elif sca_type in ['XXX+XY', 'XO+XY']:
+                    # Mosaicism - sex indeterminate, Y detected
+                    data['fetal_sex'] = 'Indeterminate (Mosaicism)'
                 break
 
         # Try to extract fetal sex separately if not determined
@@ -2782,7 +2814,7 @@ def main():
         
         with c_sca:
             st.subheader("Sex Chromosomes")
-            sca_type = st.selectbox("Type", ["XX", "XY", "XO", "XXX", "XXY", "XYY"])
+            sca_type = st.selectbox("Type", ["XX", "XY", "XO", "XXX", "XXY", "XYY", "XXX+XY", "XO+XY"])
             z1, z2 = st.columns(2)
             z_xx = z1.number_input("Z-XX", -10.0, 50.0, 0.0)
             z_xy = z2.number_input("Z-XY", -10.0, 50.0, 0.0)
@@ -3285,12 +3317,18 @@ def main():
                                             sca_col, zxx_col, zxy_col = st.columns(3)
                                             # Extract SCA type from result
                                             current_sca = result_details.get('sca_res', '')
-                                            sca_types = ["XX", "XY", "XO", "XXX", "XXY", "XYY"]
+                                            sca_types = ["XX", "XY", "XO", "XXX", "XXY", "XYY", "XXX+XY", "XO+XY"]
                                             detected_sca = "XX"
-                                            for st_type in sca_types:
-                                                if st_type in current_sca.upper():
-                                                    detected_sca = st_type
-                                                    break
+                                            # Check mosaicism types first (more specific)
+                                            if "XXX+XY" in current_sca.upper():
+                                                detected_sca = "XXX+XY"
+                                            elif "XO+XY" in current_sca.upper():
+                                                detected_sca = "XO+XY"
+                                            else:
+                                                for st_type in sca_types[:6]:  # Check non-mosaicism types
+                                                    if st_type in current_sca.upper():
+                                                        detected_sca = st_type
+                                                        break
                                             edit_sca_type = sca_col.selectbox("SCA Type", options=sca_types,
                                                 index=sca_types.index(detected_sca) if detected_sca in sca_types else 0)
                                             edit_zxx = zxx_col.number_input("Z-XX", min_value=-10.0, max_value=50.0,
@@ -3657,7 +3695,7 @@ def main():
                                         edit_bmi = 0.0
                                         st.metric("BMI", "N/A")
                                 with m_col4:
-                                    sca_options = ["XX", "XY", "XO", "XXX", "XXY", "XYY"]
+                                    sca_options = ["XX", "XY", "XO", "XXX", "XXY", "XYY", "XXX+XY", "XO+XY"]
                                     current_sca = record.get('sca_type', 'XX')
                                     sca_idx = sca_options.index(current_sca) if current_sca in sca_options else 0
                                     edit_sca = st.selectbox("SCA Type", sca_options, index=sca_idx)
