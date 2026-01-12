@@ -621,7 +621,7 @@ def delete_patient(patient_id: int, hard_delete: bool = False) -> Tuple[bool, st
 
     Args:
         patient_id: The database ID of the patient
-        hard_delete: If True, permanently delete. If False, soft delete (mark as deleted).
+        hard_delete: If True, permanently delete. If False, soft delete (but auto hard-delete orphans).
 
     Returns:
         (success, message)
@@ -637,6 +637,14 @@ def delete_patient(patient_id: int, hard_delete: bool = False) -> Tuple[bool, st
                 return False, "Patient not found"
 
             mrn, name = patient
+
+            # Check if patient has any results - orphans (no results) are always hard deleted
+            c.execute("SELECT COUNT(*) FROM results WHERE patient_id = ?", (patient_id,))
+            result_count = c.fetchone()[0]
+
+            # Auto hard-delete if patient has no results (orphan) to free up the ID
+            if result_count == 0:
+                hard_delete = True
 
             if hard_delete:
                 # First delete all associated results
@@ -767,6 +775,30 @@ def cleanup_orphaned_patients(include_active: bool = False) -> Tuple[int, str]:
     except Exception as e:
         return 0, f"Cleanup failed: {str(e)}"
 
+def get_next_patient_id(cursor) -> int:
+    """Get the next available patient ID, reusing IDs from deleted patients.
+
+    This finds the lowest unused ID by looking for gaps in the sequence
+    or returning max_id + 1 if no gaps exist.
+    """
+    # Get all existing patient IDs (including deleted ones, since we want to reuse truly deleted slots)
+    cursor.execute("SELECT id FROM patients ORDER BY id")
+    existing_ids = {row[0] for row in cursor.fetchall()}
+
+    if not existing_ids:
+        return 1
+
+    # Find the first gap in the sequence starting from 1
+    expected_id = 1
+    for existing_id in sorted(existing_ids):
+        if existing_id > expected_id:
+            # Found a gap - return the missing ID
+            return expected_id
+        expected_id = existing_id + 1
+
+    # No gaps found, return the next ID after the max
+    return max(existing_ids) + 1
+
 def save_result(patient: Dict, results: Dict, clinical: Dict, full_z: Optional[Dict] = None,
                 qc_metrics: Optional[Dict] = None, allow_duplicate: bool = True) -> Tuple[int, str]:
     """Save with audit logging and transaction support. Returns (result_id, message)."""
@@ -792,16 +824,18 @@ def save_result(patient: Dict, results: Dict, clinical: Dict, full_z: Optional[D
                 conn.rollback()
                 return 0, f"Patient with ID '{patient['id']}' already exists in registry as '{existing_name}'"
         else:
+            # Get the next available patient ID (reusing IDs from deleted patients)
+            next_id = get_next_patient_id(c)
             c.execute("""
                 INSERT INTO patients
-                (mrn_id, full_name, age, weight_kg, height_cm, bmi, weeks, clinical_notes, created_at, created_by, is_deleted)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                (id, mrn_id, full_name, age, weight_kg, height_cm, bmi, weeks, clinical_notes, created_at, created_by, is_deleted)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """, (
-                patient['id'], patient['name'], patient['age'], patient['weight'],
+                next_id, patient['id'], patient['name'], patient['age'], patient['weight'],
                 patient['height'], patient['bmi'], patient['weeks'], patient['notes'],
                 datetime.now().isoformat(), st.session_state.user['id']
             ))
-            patient_db_id = c.lastrowid
+            patient_db_id = next_id
 
         # Prepare QC metrics JSON
         qc_metrics_json = json.dumps(qc_metrics) if qc_metrics else "{}"
@@ -2893,8 +2927,8 @@ def main():
             search_term = st.text_input("🔍 Search (Name/MRN)", "")
         with col_refresh:
             st.write("")
-            st.write("")
-            if st.button("🔄 Refresh"): st.rerun()
+            if st.button("🔄 Refresh Data", help="Refresh to see latest patient data"):
+                st.rerun()
 
         with get_db_connection() as conn:
             query = """
@@ -3864,31 +3898,6 @@ def main():
 
             if not users_df.empty:
                 st.dataframe(users_df, use_container_width=True, height=200)
-
-            # Database maintenance section
-            st.divider()
-            st.markdown("**🧹 Database Maintenance**")
-            st.caption("Clean up patient records with no associated test results")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("Clean Up Soft-Deleted Orphans"):
-                    count, msg = cleanup_orphaned_patients(include_active=False)
-                    if count > 0:
-                        st.success(msg)
-                    else:
-                        st.info("No soft-deleted orphaned patients found")
-
-            with col2:
-                if st.button("Clean Up ALL Orphans (incl. active)"):
-                    count, msg = cleanup_orphaned_patients(include_active=True)
-                    if count > 0:
-                        st.success(msg)
-                    else:
-                        st.info("No orphaned patients found")
-
-            st.info("💡 **Tip**: Use 'Clean Up ALL Orphans' to remove patient records that have no test results, "
-                   "including those that were created but never completed. This frees up MRN IDs for reuse.")
 
         else:
             st.info("Admin access required for user management")
