@@ -429,6 +429,46 @@ def analyze_cnv(size: float, ratio: float) -> Tuple[str, float, str]:
         return f"High Risk -> Re-library", threshold, "HIGH"
     return "Low Risk", threshold, "LOW"
 
+
+def get_reportable_status(result_text: str, qc_status: str = "PASS", qc_override: bool = False) -> Tuple[str, str]:
+    """Determine if a result should be reported to the patient.
+
+    Args:
+        result_text: The result text (e.g., "Low Risk", "High Risk -> Re-library", "POSITIVE")
+        qc_status: QC status (PASS, FAIL, WARNING)
+        qc_override: Whether QC has been overridden by staff
+
+    Returns:
+        Tuple of (reportable_status, reason)
+        - "Yes": Result should be reported (positive or negative/low risk)
+        - "No": Result requires re-processing (re-library, resample, QC fail)
+    """
+    result_upper = str(result_text).upper()
+
+    # QC Fail without override -> Not reportable
+    if qc_status == "FAIL" and not qc_override:
+        return "No", "QC Fail"
+
+    # Check for conditions requiring re-processing
+    if "RE-LIBRARY" in result_upper or "RELIBRARY" in result_upper:
+        return "No", "Re-library required"
+    if "RESAMPLE" in result_upper:
+        return "No", "Resample required"
+    if "AMBIGUOUS" in result_upper:
+        return "No", "Ambiguous result"
+    if "INVALID" in result_upper and not qc_override:
+        return "No", "Invalid result"
+
+    # POSITIVE or Low Risk -> Reportable
+    if "POSITIVE" in result_upper:
+        return "Yes", "Screen Positive"
+    if "LOW" in result_upper or "NEGATIVE" in result_upper:
+        return "Yes", "Screen Negative"
+
+    # Default: assume reportable if none of the above conditions match
+    return "Yes", "Result available"
+
+
 def override_qc_status(result_id: int, reason: str, user_id: int) -> Tuple[bool, str]:
     """Override QC status to PASS for a result. Staff validation feature.
 
@@ -693,22 +733,35 @@ def restore_patient(patient_id: int) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Restore failed: {str(e)}"
 
-def cleanup_orphaned_patients() -> Tuple[int, str]:
-    """Clean up patients with no associated results (ghost patients)."""
+def cleanup_orphaned_patients(include_active: bool = False) -> Tuple[int, str]:
+    """Clean up patients with no associated results (ghost patients).
+
+    Args:
+        include_active: If True, also delete active patients (is_deleted=0) with no results.
+                       If False, only delete soft-deleted patients with no results.
+    """
     try:
         with get_db_connection() as conn:
             c = conn.cursor()
             # Find and delete patients with no results
-            c.execute("""
-                DELETE FROM patients
-                WHERE id NOT IN (SELECT DISTINCT patient_id FROM results WHERE patient_id IS NOT NULL)
-                AND (is_deleted = 1 OR is_deleted IS NULL)
-            """)
+            if include_active:
+                # Delete ALL patients with no results (including active ones)
+                c.execute("""
+                    DELETE FROM patients
+                    WHERE id NOT IN (SELECT DISTINCT patient_id FROM results WHERE patient_id IS NOT NULL)
+                """)
+            else:
+                # Only delete soft-deleted patients with no results
+                c.execute("""
+                    DELETE FROM patients
+                    WHERE id NOT IN (SELECT DISTINCT patient_id FROM results WHERE patient_id IS NOT NULL)
+                    AND (is_deleted = 1 OR is_deleted IS NULL)
+                """)
             deleted_count = c.rowcount
             conn.commit()
 
             if deleted_count > 0:
-                log_audit("CLEANUP_ORPHANS", f"Removed {deleted_count} orphaned patient records",
+                log_audit("CLEANUP_ORPHANS", f"Removed {deleted_count} orphaned patient records (include_active={include_active})",
                          st.session_state.user['id'] if 'user' in st.session_state else None)
             return deleted_count, f"Cleaned up {deleted_count} orphaned patient records"
     except Exception as e:
@@ -2011,34 +2064,41 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
                 return f"{z:.2f}"
             return str(z)
 
-        # Results table with risk interpretation - use Paragraph for text wrapping
+        # Results table with reportable status - use Paragraph for text wrapping
+        # Determine reportable status for each result
+        effective_qc_status = 'PASS' if qc_override else (row['qc_status'] or 'PASS')
+        t21_reportable, _ = get_reportable_status(str(row['t21_res']), effective_qc_status, qc_override)
+        t18_reportable, _ = get_reportable_status(str(row['t18_res']), effective_qc_status, qc_override)
+        t13_reportable, _ = get_reportable_status(str(row['t13_res']), effective_qc_status, qc_override)
+        sca_reportable, _ = get_reportable_status(str(row['sca_res']), effective_qc_status, qc_override)
+
         results_header = [[
             Paragraph('<b>Condition</b>', cell_style),
             Paragraph('<b>Result</b>', cell_style),
             Paragraph('<b>Z-Score</b>', cell_style),
-            Paragraph('<b>Risk Category</b>', cell_style),
+            Paragraph('<b>Reportable</b>', cell_style),
             Paragraph('<b>Ref</b>', cell_style)
         ]]
         results_rows = [
             [Paragraph('Trisomy 21 (Down Syndrome)', cell_style),
              Paragraph(str(row['t21_res']), cell_style),
              Paragraph(fmt_z(z21), cell_style),
-             Paragraph('SCREEN POSITIVE' if 'POSITIVE' in str(row['t21_res']).upper() else 'LOW RISK', cell_style),
+             Paragraph(t21_reportable, cell_style),
              Paragraph('Z &lt; 2.58', cell_style)],
             [Paragraph('Trisomy 18 (Edwards Syndrome)', cell_style),
              Paragraph(str(row['t18_res']), cell_style),
              Paragraph(fmt_z(z18), cell_style),
-             Paragraph('SCREEN POSITIVE' if 'POSITIVE' in str(row['t18_res']).upper() else 'LOW RISK', cell_style),
+             Paragraph(t18_reportable, cell_style),
              Paragraph('Z &lt; 2.58', cell_style)],
             [Paragraph('Trisomy 13 (Patau Syndrome)', cell_style),
              Paragraph(str(row['t13_res']), cell_style),
              Paragraph(fmt_z(z13), cell_style),
-             Paragraph('SCREEN POSITIVE' if 'POSITIVE' in str(row['t13_res']).upper() else 'LOW RISK', cell_style),
+             Paragraph(t13_reportable, cell_style),
              Paragraph('Z &lt; 2.58', cell_style)],
             [Paragraph('Sex Chromosome Aneuploidy', cell_style),
              Paragraph(str(row['sca_res']), cell_style),
              Paragraph(f"XX:{fmt_z(z_xx)} XY:{fmt_z(z_xy)}", cell_style),
-             Paragraph('SCREEN POSITIVE' if 'POSITIVE' in str(row['sca_res']).upper() else 'LOW RISK', cell_style),
+             Paragraph(sca_reportable, cell_style),
              Paragraph('Z &lt; 4.5', cell_style)],
         ]
 
@@ -2055,15 +2115,17 @@ def generate_pdf_report(report_id: int) -> Optional[bytes]:
             ('TOPPADDING', (0, 0), (-1, -1), 6),
         ]
 
-        # Highlight positive results - check Paragraph content
-        for idx in range(len(results_rows)):
-            result_text = str(row['t21_res']) if idx == 0 else (
-                str(row['t18_res']) if idx == 1 else (
-                    str(row['t13_res']) if idx == 2 else str(row['sca_res'])
-                )
-            )
+        # Highlight results based on reportable status
+        reportable_statuses = [t21_reportable, t18_reportable, t13_reportable, sca_reportable]
+        result_texts = [str(row['t21_res']), str(row['t18_res']), str(row['t13_res']), str(row['sca_res'])]
+
+        for idx, (reportable, result_text) in enumerate(zip(reportable_statuses, result_texts)):
             if 'POSITIVE' in result_text.upper():
+                # Positive result - red background
                 table_style.append(('BACKGROUND', (0, idx+1), (-1, idx+1), colors.HexColor('#fadbd8')))
+            elif reportable == "No":
+                # Not reportable (re-library, resample, etc.) - yellow/amber background
+                table_style.append(('BACKGROUND', (0, idx+1), (-1, idx+1), colors.HexColor('#fff3cd')))
 
         results_table.setStyle(TableStyle(table_style))
         story.append(results_table)
@@ -2668,14 +2730,24 @@ def main():
                     st.rerun()
         
         st.markdown("---")
-        
+
         # Check for duplicate patient before save button
+        patient_action = "create_new"  # Default action
         if p_id:
             exists, existing_patient = check_duplicate_patient(p_id)
             if exists:
-                st.warning(f"⚠️ Patient with ID '{p_id}' already exists in registry as '{existing_patient['name']}' "
-                          f"(Age: {existing_patient['age']}, Results: {existing_patient['result_count']}). "
-                          f"Saving will add a new result to this patient's record.")
+                if existing_patient['result_count'] == 0:
+                    # Orphan patient with no results
+                    st.warning(f"⚠️ Patient ID '{p_id}' exists as '{existing_patient['name']}' but has **0 results**. "
+                              f"This orphan record will be replaced with new patient data.")
+                    patient_action = "replace_orphan"
+                    st.session_state['orphan_patient_id'] = existing_patient['id']
+                else:
+                    # Patient with existing results
+                    st.info(f"ℹ️ Patient ID '{p_id}' already exists as '{existing_patient['name']}' "
+                           f"(Age: {existing_patient['age']}, Results: {existing_patient['result_count']}). "
+                           f"A new result will be added to this patient's record.")
+                    patient_action = "add_to_existing"
 
         if st.button("💾 SAVE & ANALYZE", type="primary", disabled=bool(val_errors)):
             t21_res, t21_risk = analyze_trisomy(config, z21, "21")
@@ -2729,6 +2801,17 @@ def main():
                 'error_rate': error_rate
             }
 
+            # Handle orphan patient replacement
+            if patient_action == "replace_orphan" and 'orphan_patient_id' in st.session_state:
+                try:
+                    with get_db_connection() as conn:
+                        c = conn.cursor()
+                        c.execute("DELETE FROM patients WHERE id = ?", (st.session_state['orphan_patient_id'],))
+                        conn.commit()
+                    del st.session_state['orphan_patient_id']
+                except Exception as e:
+                    st.error(f"Failed to replace orphan patient: {e}")
+
             rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics)
 
             if rid:
@@ -2758,24 +2841,35 @@ def main():
             else:
                 st.success(f"✅ QC PASSED")
 
+            # Calculate Reportable status for each result
+            effective_qc = qc['status']
+            t21_rep, _ = get_reportable_status(res['t21'], effective_qc)
+            t18_rep, _ = get_reportable_status(res['t18'], effective_qc)
+            t13_rep, _ = get_reportable_status(res['t13'], effective_qc)
+            sca_rep, _ = get_reportable_status(res['sca'], effective_qc)
+
             rows = [
-                ["Trisomy 21", res['t21']],
-                ["Trisomy 18", res['t18']],
-                ["Trisomy 13", res['t13']],
-                ["Sex Chromosomes", res['sca']]
+                ["Trisomy 21", res['t21'], t21_rep],
+                ["Trisomy 18", res['t18'], t18_rep],
+                ["Trisomy 13", res['t13'], t13_rep],
+                ["Sex Chromosomes", res['sca'], sca_rep]
             ]
-            for i in res['cnv_list']: rows.append(["CNV", i])
-            for i in res['rat_list']: rows.append(["RAT", i])
-            
-            df_res = pd.DataFrame(rows, columns=["Test", "Result"])
-            
+            for i in res['cnv_list']:
+                cnv_rep, _ = get_reportable_status(i, effective_qc)
+                rows.append(["CNV", i, cnv_rep])
+            for i in res['rat_list']:
+                rat_rep, _ = get_reportable_status(i, effective_qc)
+                rows.append(["RAT", i, rat_rep])
+
+            df_res = pd.DataFrame(rows, columns=["Test", "Result", "Reportable"])
+
             def color_rows(val):
                 s = str(val)
                 if "POSITIVE" in s: return 'background-color: #ffcccc; font-weight: bold'
                 if "Re-library" in s or "Resample" in s: return 'background-color: #fff3cd'
                 return ''
-            
-            st.dataframe(df_res.style.map(color_rows), use_container_width=True)
+
+            st.dataframe(df_res.style.map(color_rows, subset=['Result']), use_container_width=True)
             st.info(f"📋 FINAL: {res['final']}")
 
             if st.session_state.last_report_id:
@@ -2805,7 +2899,7 @@ def main():
         with get_db_connection() as conn:
             query = """
                 SELECT r.id, r.created_at, p.full_name, p.mrn_id, r.panel_type,
-                       r.qc_status, r.final_summary, r.full_z_json, r.t21_res
+                       r.qc_status, r.qc_override, r.final_summary, r.full_z_json, r.t21_res
                 FROM results r
                 JOIN patients p ON p.id = r.patient_id
                 WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
@@ -2834,9 +2928,19 @@ def main():
 
             df['T21_Z'] = df['full_z_json'].apply(extract_t21_z)
 
+            # Calculate Reportable status for T21 result
+            def get_t21_reportable(row):
+                qc_status = row['qc_status'] or 'PASS'
+                qc_override = bool(row.get('qc_override', 0))
+                effective_qc = 'PASS' if qc_override else qc_status
+                reportable, _ = get_reportable_status(str(row['t21_res']), effective_qc, qc_override)
+                return reportable
+
+            df['Reportable'] = df.apply(get_t21_reportable, axis=1)
+
             # Reorder columns for display (exclude raw JSON column)
-            display_df = df[['id', 'created_at', 'full_name', 'mrn_id', 'panel_type', 'qc_status', 't21_res', 'T21_Z', 'final_summary']]
-            display_df.columns = ['ID', 'Date', 'Name', 'MRN', 'Panel', 'QC', 'T21 Result', 'T21 Z-Score', 'Final Summary']
+            display_df = df[['id', 'created_at', 'full_name', 'mrn_id', 'panel_type', 'qc_status', 't21_res', 'T21_Z', 'Reportable', 'final_summary']]
+            display_df.columns = ['ID', 'Date', 'Name', 'MRN', 'Panel', 'QC', 'T21 Result', 'T21 Z-Score', 'Reportable', 'Final Summary']
 
             st.dataframe(display_df, use_container_width=True, height=400)
 
@@ -3191,13 +3295,20 @@ def main():
 
                 # Check for duplicates and show warnings/errors
                 duplicate_mrns = []
+                orphan_mrns = []  # Patients with 0 results (can be replaced)
                 for mrn in patients.keys():
                     exists, existing_patient = check_duplicate_patient(mrn)
                     if exists:
-                        duplicate_mrns.append(mrn)
-                        st.error(f"🚫 Patient ID '{mrn}' already exists as '{existing_patient['name']}' "
-                                  f"with {existing_patient['result_count']} result(s). "
-                                  f"This patient will be SKIPPED during import (Patient ID must be unique).")
+                        if existing_patient['result_count'] == 0:
+                            # Patient exists but has no results - it's an orphan, can be cleaned up
+                            orphan_mrns.append(mrn)
+                            st.warning(f"⚠️ Patient ID '{mrn}' exists as '{existing_patient['name']}' but has 0 results. "
+                                       f"This orphan record will be replaced during import.")
+                        else:
+                            duplicate_mrns.append(mrn)
+                            st.error(f"🚫 Patient ID '{mrn}' already exists as '{existing_patient['name']}' "
+                                      f"with {existing_patient['result_count']} result(s). "
+                                      f"This patient will be SKIPPED during import (Patient ID must be unique).")
 
                 # Show patients grouped by MRN with editable fields using forms
                 for mrn, records in patients.items():
@@ -3345,17 +3456,32 @@ def main():
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("✅ Confirm & Import All to Registry", type="primary"):
-                        success, fail, skipped = 0, 0, 0
+                        success, fail, skipped, replaced = 0, 0, 0, 0
                         config = load_config()
                         edit_data = st.session_state.get('pdf_edit_data', {})
 
                         for mrn, records in patients.items():
-                            # Skip duplicate patient IDs - enforce uniqueness
-                            exists, _ = check_duplicate_patient(mrn)
+                            # Check if patient exists
+                            exists, existing_patient = check_duplicate_patient(mrn)
                             if exists:
-                                skipped += len(records)
-                                st.warning(f"⚠️ Skipped patient ID '{mrn}' - already exists in registry")
-                                continue
+                                if existing_patient['result_count'] == 0:
+                                    # Orphan patient with no results - delete it first
+                                    try:
+                                        with get_db_connection() as conn:
+                                            c = conn.cursor()
+                                            c.execute("DELETE FROM patients WHERE id = ?", (existing_patient['id'],))
+                                            conn.commit()
+                                        replaced += 1
+                                        st.info(f"🔄 Replaced orphan patient record '{mrn}'")
+                                    except Exception as e:
+                                        st.error(f"Failed to replace orphan patient '{mrn}': {e}")
+                                        skipped += len(records)
+                                        continue
+                                else:
+                                    # Patient with results - skip
+                                    skipped += len(records)
+                                    st.warning(f"⚠️ Skipped patient ID '{mrn}' - already exists with {existing_patient['result_count']} result(s)")
+                                    continue
 
                             for idx, original_data in enumerate(records, 1):
                                 try:
@@ -3452,12 +3578,14 @@ def main():
                                     fail += 1
 
                         result_msg = f"✅ Import Complete: {success} records imported"
+                        if replaced > 0:
+                            result_msg += f", {replaced} orphan records replaced"
                         if fail > 0:
                             result_msg += f", {fail} failed"
                         if skipped > 0:
                             result_msg += f", {skipped} skipped (duplicate IDs)"
                         st.success(result_msg)
-                        log_audit("PDF_IMPORT", f"Imported {success} records, {fail} failed, {skipped} skipped (duplicates)",
+                        log_audit("PDF_IMPORT", f"Imported {success} records, {replaced} orphans replaced, {fail} failed, {skipped} skipped (duplicates)",
                                  st.session_state.user['id'])
 
                         # Clean up session state
@@ -3740,16 +3868,27 @@ def main():
             # Database maintenance section
             st.divider()
             st.markdown("**🧹 Database Maintenance**")
+            st.caption("Clean up patient records with no associated test results")
+
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Clean Up Orphaned Patients"):
-                    count, msg = cleanup_orphaned_patients()
+                if st.button("Clean Up Soft-Deleted Orphans"):
+                    count, msg = cleanup_orphaned_patients(include_active=False)
+                    if count > 0:
+                        st.success(msg)
+                    else:
+                        st.info("No soft-deleted orphaned patients found")
+
+            with col2:
+                if st.button("Clean Up ALL Orphans (incl. active)"):
+                    count, msg = cleanup_orphaned_patients(include_active=True)
                     if count > 0:
                         st.success(msg)
                     else:
                         st.info("No orphaned patients found")
-            with col2:
-                st.caption("Removes patient records with no associated results")
+
+            st.info("💡 **Tip**: Use 'Clean Up ALL Orphans' to remove patient records that have no test results, "
+                   "including those that were created but never completed. This frees up MRN IDs for reuse.")
 
         else:
             st.info("Admin access required for user management")

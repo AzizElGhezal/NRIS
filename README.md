@@ -23,9 +23,10 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
   - Complete patient demographics and clinical history
   - MRN (Medical Record Number) tracking with uniqueness enforcement
   - BMI calculations and gestational age tracking
-  - Soft delete functionality (no ghost patients)
+  - Soft delete functionality with automatic MRN release for reuse
   - Patient data restoration capability
-  - Orphaned patient cleanup utility
+  - Orphaned patient cleanup utility (soft-deleted and active orphans)
+  - Smart handling of patients with 0 results (automatic replacement)
 
 - **NIPT Result Analysis**
   - Multiple panel types (Basic, Standard, Plus, Pro)
@@ -34,6 +35,9 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
   - Sex chromosome aneuploidy (SCA) detection
   - Rare autosomal trisomy (RAT) analysis
   - Fetal sex determination
+  - **Reportable Status**: Clear Yes/No indicator for whether results should be reported
+    - Yes: Screen Positive or Screen Negative results ready for reporting
+    - No: Re-library, Resample, QC Fail, or Ambiguous results requiring further processing
 
 - **PDF Import (Enhanced)**
   - Comprehensive data extraction from PDF reports
@@ -67,6 +71,16 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
 
 ## What's New in v2.1
 
+### Clinical Workflow Improvements
+- **Reportable Status**: Replaced "Risk Category" with clear "Reportable" indicator (Yes/No)
+  - Yes = Result ready to report (Screen Positive or Screen Negative)
+  - No = Requires further action (Re-library, Resample, QC Fail, Ambiguous)
+  - Displayed in Analysis results, Registry, and PDF reports
+  - Color-coded: Red for positive results, Yellow for non-reportable
+- **MRN Reuse for Deleted Patients**: When patients are deleted, their MRN is immediately available for new patients
+- **Orphan Patient Handling**: Patients with 0 results are automatically detected and can be replaced during import
+- **Improved Duplicate Detection**: Clear distinction between patients with results (skip) vs orphans (replace)
+
 ### Security Enhancements
 - **Password Complexity**: Passwords must now contain 8+ characters with uppercase, lowercase, and numbers
 - **Account Lockout**: Accounts lock for 15 minutes after 5 failed login attempts
@@ -77,8 +91,9 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
 ### Data Integrity Improvements
 - **Foreign Key Enforcement**: Database foreign key constraints now properly enforced
 - **Soft Delete**: Deleted patients are marked rather than removed, preventing ghost records
+- **MRN Release on Delete**: Soft-deleted patients have their MRN modified to free it for reuse
 - **Transaction Support**: Import operations use database transactions to prevent partial saves
-- **Orphan Cleanup**: Admin utility to clean up orphaned patient records
+- **Enhanced Orphan Cleanup**: Two cleanup options - soft-deleted only or all orphans including active
 
 ### Performance Optimizations
 - **Database Indexes**: Added indexes on frequently queried columns
@@ -92,6 +107,7 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
 - **Extraction Confidence**: Shows confidence level for extracted data
 - **Missing Field Detection**: Reports which fields couldn't be extracted
 - **Scanned PDF Detection**: Warns when PDF appears to be image-based
+- **Smart Orphan Replacement**: Automatically replaces patients with 0 results instead of skipping
 
 ---
 
@@ -201,7 +217,10 @@ Password requirements:
 ### Admin Functions
 
 - **User Management**: Create/manage user accounts
-- **Database Maintenance**: Clean up orphaned patient records
+- **Database Maintenance**:
+  - Clean up soft-deleted orphaned patients
+  - Clean up ALL orphaned patients (including active ones with 0 results)
+  - Frees up MRN IDs for reuse
 - **Audit Log Review**: Monitor all system activity
 - **Configuration**: Adjust QC and clinical thresholds
 
@@ -363,17 +382,40 @@ Regularly backup the following files:
 ## Version History
 
 ### Version 2.1 (Current)
-- Enhanced security with password complexity and account lockout
-- Session timeout for inactive users
+**Clinical Workflow**
+- New "Reportable" status replaces confusing "Risk Category"
+- Clear Yes/No indicator for whether results can be reported
+- Color-coded results (Red=Positive, Yellow=Needs action)
+
+**Patient Management**
+- MRN reuse when patients are deleted
+- Smart orphan patient detection and replacement
+- Improved duplicate handling in batch import
+- Enhanced cleanup utilities for orphaned records
+
+**Security**
+- Password complexity requirements (8+ chars, mixed case, numbers)
+- Account lockout after 5 failed login attempts
+- 60-minute session timeout for inactive users
 - Forced password change on first login
-- Database foreign key enforcement
-- Soft delete for patients (no ghost records)
-- Transaction support for data integrity
-- Database indexes for performance
-- Query caching for analytics
-- PDF validation and improved extraction
-- Admin database maintenance tools
-- Comprehensive audit logging improvements
+- Enhanced audit logging
+
+**Data Integrity**
+- Database foreign key constraint enforcement
+- Soft delete with automatic MRN release
+- Transaction support for import operations
+- Optimized database indexes
+
+**Performance**
+- Query caching for analytics (60 seconds)
+- Combined and optimized database queries
+- Reduced redundant database connections
+
+**PDF Import**
+- File validation (size, type, format)
+- Extraction confidence scoring
+- Smart orphan replacement during import
+- Better error handling and reporting
 
 ### Version 2.0
 - Added user authentication and role-based access control
