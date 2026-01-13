@@ -4069,9 +4069,9 @@ def main():
                 stats_query = """
                     SELECT
                         COUNT(*) as total,
-                        SUM(CASE WHEN final_summary LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as positive,
-                        SUM(CASE WHEN qc_status = 'FAIL' AND (qc_override != 1 OR qc_override IS NULL) THEN 1 ELSE 0 END) as qc_fail,
-                        SUM(CASE WHEN final_summary LIKE '%NEGATIVE%' THEN 1 ELSE 0 END) as negative
+                        COALESCE(SUM(CASE WHEN final_summary LIKE '%POSITIVE%' THEN 1 ELSE 0 END), 0) as positive,
+                        COALESCE(SUM(CASE WHEN qc_status = 'FAIL' AND (qc_override != 1 OR qc_override IS NULL) THEN 1 ELSE 0 END), 0) as qc_fail,
+                        COALESCE(SUM(CASE WHEN final_summary LIKE '%NEGATIVE%' THEN 1 ELSE 0 END), 0) as negative
                     FROM results r
                     JOIN patients p ON p.id = r.patient_id
                     WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
@@ -4080,10 +4080,10 @@ def main():
 
             # Compact metrics row
             m1, m2, m3, m4, m5 = st.columns([1, 1, 1, 1, 2])
-            m1.metric("Total", int(stats['total']))
-            m2.metric("Positive", int(stats['positive']), delta=None, delta_color="inverse")
-            m3.metric("QC Fail", int(stats['qc_fail']), delta=None, delta_color="inverse")
-            m4.metric("Negative", int(stats['negative']))
+            m1.metric("Total", int(stats['total'] or 0))
+            m2.metric("Positive", int(stats['positive'] or 0), delta=None, delta_color="inverse")
+            m3.metric("QC Fail", int(stats['qc_fail'] or 0), delta=None, delta_color="inverse")
+            m4.metric("Negative", int(stats['negative'] or 0))
             with m5:
                 if st.button("🔄 Refresh Data", use_container_width=True):
                     st.rerun()
