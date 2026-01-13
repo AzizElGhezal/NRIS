@@ -38,6 +38,7 @@ import secrets
 import re
 import shutil
 import os
+import html as html_module
 from datetime import datetime, timedelta
 from typing import Tuple, List, Dict, Any, Optional
 from pathlib import Path
@@ -2987,24 +2988,28 @@ def render_patient_info_card(record: Dict, show_full_details: bool = False, card
         show_full_details: Whether to show all details or a compact view
         card_key: Unique key for interactive elements
     """
+    # Helper function to safely escape HTML
+    def esc(val):
+        return html_module.escape(str(val)) if val is not None else 'N/A'
+
     # Determine color based on final summary
     summary = str(record.get('final_summary', '')).upper()
     qc_status = str(record.get('qc_status', 'PASS')).upper()
 
     if 'POSITIVE' in summary:
-        border_color = "#E74C3C"  # Red
+        border_color = "#E74C3C"
         bg_color = "#FDEDEC"
         status_emoji = "🔴"
     elif 'FAIL' in qc_status or 'INVALID' in summary:
-        border_color = "#E74C3C"  # Red
+        border_color = "#E74C3C"
         bg_color = "#FDEDEC"
         status_emoji = "⚠️"
     elif 'WARNING' in qc_status or 'HIGH RISK' in summary:
-        border_color = "#F39C12"  # Orange
+        border_color = "#F39C12"
         bg_color = "#FEF9E7"
         status_emoji = "🟠"
     else:
-        border_color = "#27AE60"  # Green
+        border_color = "#27AE60"
         bg_color = "#EAFAF1"
         status_emoji = "🟢"
 
@@ -3021,8 +3026,6 @@ def render_patient_info_card(record: Dict, show_full_details: bool = False, card
     z21 = z_data.get('21', z_data.get(21, 'N/A'))
     z18 = z_data.get('18', z_data.get(18, 'N/A'))
     z13 = z_data.get('13', z_data.get(13, 'N/A'))
-    z_xx = z_data.get('XX', 'N/A')
-    z_xy = z_data.get('XY', 'N/A')
 
     # Format z-scores
     z21_str = f"{float(z21):.2f}" if z21 != 'N/A' and z21 is not None else 'N/A'
@@ -3035,88 +3038,86 @@ def render_patient_info_card(record: Dict, show_full_details: bool = False, card
     effective_qc = 'PASS' if qc_override else qc_status
     reportable, reportable_reason = get_reportable_status(str(t21_res), effective_qc, qc_override)
 
-    # Card HTML/Markdown
-    st.markdown(f"""
-    <div style="
-        border: 2px solid {border_color};
-        border-radius: 12px;
-        padding: 16px;
-        margin: 10px 0;
-        background-color: {bg_color};
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    ">
+    # Pre-compute values for cleaner HTML
+    full_name = esc(record.get('full_name', 'Unknown'))
+    record_id = esc(record.get('id', 'N/A'))
+    created_at = record.get('created_at', 'N/A')
+    created_at_str = esc(created_at[:16]) if created_at and len(str(created_at)) >= 16 else esc(created_at)
+    mrn_id = esc(record.get('mrn_id', 'N/A'))
+    panel_type = esc(record.get('panel_type', 'N/A'))
+    t21_res_str = esc(record.get('t21_res', 'N/A'))
+    t18_res_str = esc(record.get('t18_res', 'N/A'))
+    t13_res_str = esc(record.get('t13_res', 'N/A'))
+    sca_res_str = esc(record.get('sca_res', 'N/A'))
+    final_summary_str = esc(record.get('final_summary', 'N/A'))
+
+    # Compute colors
+    qc_color = '#27AE60' if effective_qc == 'PASS' else '#E74C3C' if effective_qc == 'FAIL' else '#F39C12'
+    qc_display = effective_qc + ('*' if qc_override else '')
+    reportable_color = '#27AE60' if reportable == 'Yes' else '#E74C3C'
+    reportable_display = reportable + (f' ({reportable_reason})' if reportable == 'No' else '')
+    summary_bg = '#27AE60' if 'NEGATIVE' in summary else '#E74C3C' if 'POSITIVE' in summary or 'INVALID' in summary else '#F39C12'
+
+    # Build HTML card
+    card_html = f'''
+    <div style="border: 2px solid {border_color}; border-radius: 12px; padding: 16px; margin: 10px 0; background-color: {bg_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
             <div>
-                <span style="font-size: 1.3em; font-weight: bold; color: #2C3E50;">
-                    {status_emoji} {record.get('full_name', 'Unknown')}
-                </span>
-                <span style="background: #3498DB; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; margin-left: 10px;">
-                    ID #{record.get('id', 'N/A')}
-                </span>
+                <span style="font-size: 1.3em; font-weight: bold; color: #2C3E50;">{status_emoji} {full_name}</span>
+                <span style="background: #3498DB; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; margin-left: 10px;">ID #{record_id}</span>
             </div>
-            <div style="text-align: right; color: #7F8C8D; font-size: 0.9em;">
-                {record.get('created_at', 'N/A')[:16] if record.get('created_at') else 'N/A'}
-            </div>
+            <div style="text-align: right; color: #7F8C8D; font-size: 0.9em;">{created_at_str}</div>
         </div>
-
         <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 12px;">
             <div style="background: white; padding: 8px; border-radius: 6px;">
                 <div style="font-size: 0.8em; color: #7F8C8D;">MRN</div>
-                <div style="font-weight: 600; color: #2C3E50;">{record.get('mrn_id', 'N/A')}</div>
+                <div style="font-weight: 600; color: #2C3E50;">{mrn_id}</div>
             </div>
             <div style="background: white; padding: 8px; border-radius: 6px;">
                 <div style="font-size: 0.8em; color: #7F8C8D;">Panel</div>
-                <div style="font-weight: 600; color: #2C3E50;">{record.get('panel_type', 'N/A')}</div>
+                <div style="font-weight: 600; color: #2C3E50;">{panel_type}</div>
             </div>
             <div style="background: white; padding: 8px; border-radius: 6px;">
                 <div style="font-size: 0.8em; color: #7F8C8D;">QC Status</div>
-                <div style="font-weight: 600; color: {'#27AE60' if effective_qc == 'PASS' else '#E74C3C' if effective_qc == 'FAIL' else '#F39C12'};">
-                    {effective_qc}{'*' if qc_override else ''}
-                </div>
+                <div style="font-weight: 600; color: {qc_color};">{qc_display}</div>
             </div>
         </div>
-
         <div style="background: white; padding: 12px; border-radius: 8px; margin-bottom: 12px;">
             <div style="font-size: 0.85em; color: #7F8C8D; margin-bottom: 8px;">Trisomy Results</div>
             <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
                 <div style="text-align: center;">
                     <div style="font-size: 0.75em; color: #95A5A6;">T21</div>
-                    <div style="font-weight: 600; color: #2C3E50;">{record.get('t21_res', 'N/A')}</div>
+                    <div style="font-weight: 600; color: #2C3E50;">{t21_res_str}</div>
                     <div style="font-size: 0.75em; color: #7F8C8D;">Z: {z21_str}</div>
                 </div>
                 <div style="text-align: center;">
                     <div style="font-size: 0.75em; color: #95A5A6;">T18</div>
-                    <div style="font-weight: 600; color: #2C3E50;">{record.get('t18_res', 'N/A')}</div>
+                    <div style="font-weight: 600; color: #2C3E50;">{t18_res_str}</div>
                     <div style="font-size: 0.75em; color: #7F8C8D;">Z: {z18_str}</div>
                 </div>
                 <div style="text-align: center;">
                     <div style="font-size: 0.75em; color: #95A5A6;">T13</div>
-                    <div style="font-weight: 600; color: #2C3E50;">{record.get('t13_res', 'N/A')}</div>
+                    <div style="font-weight: 600; color: #2C3E50;">{t13_res_str}</div>
                     <div style="font-size: 0.75em; color: #7F8C8D;">Z: {z13_str}</div>
                 </div>
             </div>
         </div>
-
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
             <div style="background: white; padding: 10px; border-radius: 6px;">
                 <div style="font-size: 0.8em; color: #7F8C8D;">SCA Result</div>
-                <div style="font-weight: 600; color: #2C3E50;">{record.get('sca_res', 'N/A')}</div>
+                <div style="font-weight: 600; color: #2C3E50;">{sca_res_str}</div>
             </div>
             <div style="background: white; padding: 10px; border-radius: 6px;">
                 <div style="font-size: 0.8em; color: #7F8C8D;">Reportable</div>
-                <div style="font-weight: 600; color: {'#27AE60' if reportable == 'Yes' else '#E74C3C'};">
-                    {reportable} {f'({reportable_reason})' if reportable == 'No' else ''}
-                </div>
+                <div style="font-weight: 600; color: {reportable_color};">{reportable_display}</div>
             </div>
         </div>
-
-        <div style="margin-top: 12px; padding: 10px; background: {'#27AE60' if 'NEGATIVE' in summary else '#E74C3C' if 'POSITIVE' in summary or 'INVALID' in summary else '#F39C12'}; border-radius: 6px; text-align: center;">
-            <span style="color: white; font-weight: 700; font-size: 1.1em;">
-                {record.get('final_summary', 'N/A')}
-            </span>
+        <div style="margin-top: 12px; padding: 10px; background: {summary_bg}; border-radius: 6px; text-align: center;">
+            <span style="color: white; font-weight: 700; font-size: 1.1em;">{final_summary_str}</span>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    '''
+    st.markdown(card_html, unsafe_allow_html=True)
 
 
 def render_test_result_card(result: Dict, show_actions: bool = False, card_key: str = ""):
@@ -3127,6 +3128,10 @@ def render_test_result_card(result: Dict, show_actions: bool = False, card_key: 
         show_actions: Whether to show action buttons
         card_key: Unique key for interactive elements
     """
+    # Helper function to safely escape HTML
+    def esc(val):
+        return html_module.escape(str(val)) if val is not None else 'N/A'
+
     # Determine color based on status
     qc_status = str(result.get('qc_status', 'PASS')).upper()
     qc_override = bool(result.get('qc_override', 0))
@@ -3151,62 +3156,61 @@ def render_test_result_card(result: Dict, show_actions: bool = False, card_key: 
         bg_color = "#EAFAF1"
         status_icon = "🟢"
 
+    # Pre-compute values
     created_at = result.get('created_at', 'N/A')
     if isinstance(created_at, str) and len(created_at) > 16:
         created_at = created_at[:16]
+    created_at_str = esc(created_at)
 
-    st.markdown(f"""
-    <div style="
-        border: 2px solid {border_color};
-        border-radius: 10px;
-        padding: 14px;
-        margin: 8px 0;
-        background-color: {bg_color};
-    ">
+    result_id = esc(result.get('id', 'N/A'))
+    panel_type = esc(result.get('panel_type', 'N/A'))
+    t21_res = esc(result.get('t21_res', 'N/A'))
+    t18_res = esc(result.get('t18_res', 'N/A'))
+    t13_res = esc(result.get('t13_res', 'N/A'))
+    sca_res = esc(result.get('sca_res', 'N/A'))
+    final_summary_str = esc(result.get('final_summary', 'N/A'))
+
+    qc_color = '#27AE60' if effective_qc == 'PASS' else '#E74C3C' if effective_qc == 'FAIL' else '#F39C12'
+    qc_display = effective_qc + ('*' if qc_override else '')
+    summary_bg = '#27AE60' if 'NEGATIVE' in final_summary else '#E74C3C' if 'POSITIVE' in final_summary or 'INVALID' in final_summary else '#F39C12'
+
+    card_html = f'''
+    <div style="border: 2px solid {border_color}; border-radius: 10px; padding: 14px; margin: 8px 0; background-color: {bg_color};">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
             <div>
-                <span style="font-weight: bold; font-size: 1.1em;">
-                    {status_icon} Result #{result.get('id', 'N/A')}
-                </span>
-                <span style="background: #9B59B6; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 8px;">
-                    {result.get('panel_type', 'N/A')}
-                </span>
+                <span style="font-weight: bold; font-size: 1.1em;">{status_icon} Result #{result_id}</span>
+                <span style="background: #9B59B6; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 8px;">{panel_type}</span>
             </div>
-            <div style="color: #7F8C8D; font-size: 0.85em;">{created_at}</div>
+            <div style="color: #7F8C8D; font-size: 0.85em;">{created_at_str}</div>
         </div>
-
         <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px;">
             <div style="background: white; padding: 6px; border-radius: 4px; text-align: center;">
                 <div style="font-size: 0.7em; color: #95A5A6;">T21</div>
-                <div style="font-size: 0.9em; font-weight: 600;">{result.get('t21_res', 'N/A')}</div>
+                <div style="font-size: 0.9em; font-weight: 600;">{t21_res}</div>
             </div>
             <div style="background: white; padding: 6px; border-radius: 4px; text-align: center;">
                 <div style="font-size: 0.7em; color: #95A5A6;">T18</div>
-                <div style="font-size: 0.9em; font-weight: 600;">{result.get('t18_res', 'N/A')}</div>
+                <div style="font-size: 0.9em; font-weight: 600;">{t18_res}</div>
             </div>
             <div style="background: white; padding: 6px; border-radius: 4px; text-align: center;">
                 <div style="font-size: 0.7em; color: #95A5A6;">T13</div>
-                <div style="font-size: 0.9em; font-weight: 600;">{result.get('t13_res', 'N/A')}</div>
+                <div style="font-size: 0.9em; font-weight: 600;">{t13_res}</div>
             </div>
             <div style="background: white; padding: 6px; border-radius: 4px; text-align: center;">
                 <div style="font-size: 0.7em; color: #95A5A6;">SCA</div>
-                <div style="font-size: 0.9em; font-weight: 600;">{result.get('sca_res', 'N/A')}</div>
+                <div style="font-size: 0.9em; font-weight: 600;">{sca_res}</div>
             </div>
         </div>
-
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div style="background: white; padding: 6px 12px; border-radius: 4px;">
                 <span style="font-size: 0.8em; color: #7F8C8D;">QC: </span>
-                <span style="font-weight: 600; color: {'#27AE60' if effective_qc == 'PASS' else '#E74C3C' if effective_qc == 'FAIL' else '#F39C12'};">
-                    {effective_qc}{'*' if qc_override else ''}
-                </span>
+                <span style="font-weight: 600; color: {qc_color};">{qc_display}</span>
             </div>
-            <div style="padding: 6px 12px; border-radius: 4px; background: {'#27AE60' if 'NEGATIVE' in final_summary else '#E74C3C' if 'POSITIVE' in final_summary or 'INVALID' in final_summary else '#F39C12'}; color: white; font-weight: 600;">
-                {result.get('final_summary', 'N/A')}
-            </div>
+            <div style="padding: 6px 12px; border-radius: 4px; background: {summary_bg}; color: white; font-weight: 600;">{final_summary_str}</div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    '''
+    st.markdown(card_html, unsafe_allow_html=True)
 
 
 # ==================== ANALYTICS ====================
