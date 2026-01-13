@@ -863,7 +863,7 @@ def analyze_trisomy(config: Dict, z_score: float, chrom: str) -> Tuple[str, str]
         return "Low Risk", "LOW"
     if z_score < thresholds['TRISOMY_AMBIGUOUS']: 
         return f"High Risk (Z:{z_score:.2f}) -> Re-library", "HIGH"
-    return "POSITIVE -> Report Positive", "POSITIVE"
+    return "POSITIVE", "POSITIVE"
 
 def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: float) -> Tuple[str, str]:
     """Enhanced SCA analysis based on GeneMind NIPT guidelines.
@@ -2635,14 +2635,17 @@ def generate_pdf_report(report_id: int, lang: str = None) -> Optional[bytes]:
         # Display status - add override indicator if QC was overridden
         qc_display_status = f"{qc_status} ({t('override')})" if qc_override else qc_status
 
+        # Use Paragraph for QC status to enable text wrapping in the cell
+        qc_status_para = Paragraph(f"<b>{qc_display_status}</b>", cell_style)
+
         for i, (param, val, ref, status) in enumerate(qc_items):
             if i == 0:
-                qc_rows.append([qc_display_status, param, val, ref, status])
+                qc_rows.append([qc_status_para, param, val, ref, status])
             else:
                 qc_rows.append(['', param, val, ref, status])
 
         qc_table_data = qc_header + qc_rows
-        qc_table = Table(qc_table_data, colWidths=[0.9*inch, 1.5*inch, 0.9*inch, 1.5*inch, 1.0*inch])
+        qc_table = Table(qc_table_data, colWidths=[1.1*inch, 1.4*inch, 0.9*inch, 1.4*inch, 1.0*inch])
 
         # Build table style with color-coded status cells
         table_style_list = [
