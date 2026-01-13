@@ -1,9 +1,22 @@
 """
-NIPT Result Interpretation Software (NRIS) v2.3 - Enhanced Edition
+NIPT Result Interpretation Software (NRIS) v2.4 - Enhanced Edition
 By AzizElGhezal
 ---------------------------
 Advanced clinical genetics dashboard with authentication, analytics,
 PDF reports, visualizations, and comprehensive audit logging.
+
+Version 2.4 Improvements:
+- Enhanced analysis report: Comprehensive post-analysis display showing patient
+  demographics, QC metrics, trisomy results with Z-scores, SCA results, and
+  CNV/RAT findings in a well-structured format
+- French PDF in Registry: Quick actions now include language selector for
+  English/French PDF generation directly from the Browse tab
+- Improved navigation: Clear feedback messages when selecting patients,
+  guiding users to the Patient Details tab
+- Multi-result PDF generation: Each test result in Patient Details now has
+  dedicated English and French PDF download buttons
+- Better patient selection UX: Banner notification in Patient Details tab
+  when a patient is already selected
 
 Version 2.3 Improvements:
 - Patient info cards: Registry now displays individual patient info cards
@@ -3978,53 +3991,129 @@ def main():
         if st.session_state.analysis_complete:
             res = st.session_state.current_result['clinical']
             qc = st.session_state.current_result['qc']
-            
+
             st.divider()
-            
-            if qc['status'] == "FAIL":
-                st.error(f"❌ QC FAILED: {qc['msg']}")
-                st.error(f"ACTION: {qc['advice']}")
-            elif qc['status'] == "WARNING":
-                st.warning(f"⚠️ QC WARNING: {qc['msg']}")
-            else:
-                st.success(f"✅ QC PASSED")
+            st.subheader("📋 Analysis Report")
 
-            # Display result using patient info card
+            # Get full result data for comprehensive display
             if st.session_state.last_report_id:
-                card_record = get_result_for_card(st.session_state.last_report_id)
-                if card_record:
-                    render_patient_info_card(card_record, card_key="analysis_result_card")
+                with get_db_connection() as conn:
+                    report_query = """
+                        SELECT r.id, r.created_at, p.full_name, p.mrn_id, p.age, p.weeks, p.weight_kg, p.height_cm, p.bmi,
+                               p.clinical_notes, r.panel_type, r.qc_status, r.qc_details, r.qc_advice,
+                               r.qc_metrics_json, r.full_z_json, r.t21_res, r.t18_res, r.t13_res, r.sca_res,
+                               r.cnv_json, r.rat_json, r.final_summary
+                        FROM results r
+                        JOIN patients p ON p.id = r.patient_id
+                        WHERE r.id = ?
+                    """
+                    report_data = pd.read_sql(report_query, conn, params=(st.session_state.last_report_id,))
 
-                    # Display CNV and RAT findings if present
+                if not report_data.empty:
+                    row = report_data.iloc[0]
+                    qc_metrics = json.loads(row['qc_metrics_json']) if row['qc_metrics_json'] else {}
+                    full_z = json.loads(row['full_z_json']) if row['full_z_json'] else {}
+
+                    # QC Status banner
+                    if qc['status'] == "FAIL":
+                        st.error(f"❌ QC FAILED: {qc['msg']}")
+                        st.error(f"**Recommended Action:** {qc['advice']}")
+                    elif qc['status'] == "WARNING":
+                        st.warning(f"⚠️ QC WARNING: {qc['msg']}")
+                    else:
+                        st.success(f"✅ QC PASSED - Results are valid")
+
+                    # Patient Information Section
+                    st.markdown("#### Patient Information")
+                    pat_cols = st.columns(4)
+                    pat_cols[0].metric("Patient Name", row['full_name'] or "N/A")
+                    pat_cols[1].metric("MRN", row['mrn_id'] or "N/A")
+                    pat_cols[2].metric("Age", f"{row['age']} years" if row['age'] else "N/A")
+                    pat_cols[3].metric("Gestational Weeks", f"{row['weeks']} weeks" if row['weeks'] else "N/A")
+
+                    # QC Metrics Section
+                    st.markdown("#### QC Metrics")
+                    qc_cols = st.columns(6)
+                    qc_cols[0].metric("Reads (M)", f"{qc_metrics.get('reads', 'N/A')}")
+                    qc_cols[1].metric("Cff %", f"{qc_metrics.get('cff', 'N/A')}")
+                    qc_cols[2].metric("GC %", f"{qc_metrics.get('gc', 'N/A')}")
+                    qc_cols[3].metric("QS", f"{qc_metrics.get('qs', 'N/A')}")
+                    qc_cols[4].metric("Unique %", f"{qc_metrics.get('unique_rate', 'N/A')}")
+                    qc_cols[5].metric("Error %", f"{qc_metrics.get('error_rate', 'N/A')}")
+
+                    # Trisomy Results Section
+                    st.markdown("#### Trisomy Analysis Results")
+                    tri_cols = st.columns(3)
+
+                    # T21
+                    t21_color = "normal" if "NEG" in str(row['t21_res']).upper() else "inverse"
+                    z21 = full_z.get('21', full_z.get(21, 'N/A'))
+                    z21_str = f"{float(z21):.2f}" if z21 != 'N/A' and z21 is not None else 'N/A'
+                    tri_cols[0].metric("Trisomy 21 (Down)", row['t21_res'] or "N/A", f"Z-score: {z21_str}", delta_color=t21_color)
+
+                    # T18
+                    t18_color = "normal" if "NEG" in str(row['t18_res']).upper() else "inverse"
+                    z18 = full_z.get('18', full_z.get(18, 'N/A'))
+                    z18_str = f"{float(z18):.2f}" if z18 != 'N/A' and z18 is not None else 'N/A'
+                    tri_cols[1].metric("Trisomy 18 (Edwards)", row['t18_res'] or "N/A", f"Z-score: {z18_str}", delta_color=t18_color)
+
+                    # T13
+                    t13_color = "normal" if "NEG" in str(row['t13_res']).upper() else "inverse"
+                    z13 = full_z.get('13', full_z.get(13, 'N/A'))
+                    z13_str = f"{float(z13):.2f}" if z13 != 'N/A' and z13 is not None else 'N/A'
+                    tri_cols[2].metric("Trisomy 13 (Patau)", row['t13_res'] or "N/A", f"Z-score: {z13_str}", delta_color=t13_color)
+
+                    # SCA Section
+                    st.markdown("#### Sex Chromosome Analysis")
+                    sca_cols = st.columns([2, 1, 1])
+                    sca_cols[0].metric("SCA Result", row['sca_res'] or "N/A")
+                    z_xx = full_z.get('XX', 'N/A')
+                    z_xy = full_z.get('XY', 'N/A')
+                    sca_cols[1].metric("Z-XX", f"{float(z_xx):.2f}" if z_xx != 'N/A' and z_xx is not None else 'N/A')
+                    sca_cols[2].metric("Z-XY", f"{float(z_xy):.2f}" if z_xy != 'N/A' and z_xy is not None else 'N/A')
+
+                    # CNV and RAT findings
                     if res['cnv_list'] or res['rat_list']:
-                        st.markdown("""
-                        <div style="background: white; padding: 12px; border-radius: 8px; margin-top: 12px;">
-                            <div style="font-size: 0.85em; color: #7F8C8D; margin-bottom: 8px;">Additional Findings</div>
-                        """, unsafe_allow_html=True)
+                        st.markdown("#### Additional Findings")
+                        finding_cols = st.columns(2)
 
-                        if res['cnv_list']:
-                            for cnv in res['cnv_list']:
-                                cnv_rep, _ = get_reportable_status(cnv, qc['status'])
-                                st.markdown(f"""
-                                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #eee;">
-                                    <span style="color: #7F8C8D;">CNV:</span>
-                                    <span style="font-weight: 600; color: #2C3E50;">{cnv}</span>
-                                    <span style="color: {'#27AE60' if cnv_rep == 'Yes' else '#E74C3C'};">{cnv_rep}</span>
-                                </div>
-                                """, unsafe_allow_html=True)
+                        with finding_cols[0]:
+                            if res['cnv_list']:
+                                st.markdown("**CNV Findings:**")
+                                for cnv in res['cnv_list']:
+                                    cnv_rep, _ = get_reportable_status(cnv, qc['status'])
+                                    icon = "✅" if cnv_rep == "Yes" else "⚠️"
+                                    st.markdown(f"- {icon} {cnv}")
+                            else:
+                                st.markdown("**CNV Findings:** None detected")
 
-                        if res['rat_list']:
-                            for rat in res['rat_list']:
-                                rat_rep, _ = get_reportable_status(rat, qc['status'])
-                                st.markdown(f"""
-                                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #eee;">
-                                    <span style="color: #7F8C8D;">RAT:</span>
-                                    <span style="font-weight: 600; color: #2C3E50;">{rat}</span>
-                                    <span style="color: {'#27AE60' if rat_rep == 'Yes' else '#E74C3C'};">{rat_rep}</span>
-                                </div>
-                                """, unsafe_allow_html=True)
+                        with finding_cols[1]:
+                            if res['rat_list']:
+                                st.markdown("**RAT Findings:**")
+                                for rat in res['rat_list']:
+                                    rat_rep, _ = get_reportable_status(rat, qc['status'])
+                                    icon = "✅" if rat_rep == "Yes" else "⚠️"
+                                    st.markdown(f"- {icon} {rat}")
+                            else:
+                                st.markdown("**RAT Findings:** None detected")
 
-                        st.markdown("</div>", unsafe_allow_html=True)
+                    # Final Summary with styled box
+                    summary = str(row['final_summary']).upper()
+                    if 'POSITIVE' in summary:
+                        st.error(f"### Final Result: {row['final_summary']}")
+                    elif 'INVALID' in summary or 'FAIL' in summary:
+                        st.error(f"### Final Result: {row['final_summary']}")
+                    elif 'HIGH RISK' in summary:
+                        st.warning(f"### Final Result: {row['final_summary']}")
+                    else:
+                        st.success(f"### Final Result: {row['final_summary']}")
+
+                    # Reportable status
+                    reportable, reason = get_reportable_status(str(row['t21_res']), qc['status'])
+                    if reportable == "Yes":
+                        st.info(f"✅ **Reportable:** Yes - Result is ready for clinical reporting")
+                    else:
+                        st.warning(f"⚠️ **Reportable:** No - {reason}")
                 else:
                     st.info(f"📋 FINAL: {res['final']}")
 
@@ -4309,12 +4398,15 @@ def main():
 
                 # Quick action row
                 st.markdown("**Quick Actions:**")
-                action_cols = st.columns([2, 2, 2, 2, 2])
+                action_cols = st.columns([2, 1, 2, 2, 2, 2])
 
                 with action_cols[0]:
                     view_id = st.number_input("Report ID", min_value=1, value=1, key="quick_view_id", label_visibility="collapsed")
 
                 with action_cols[1]:
+                    quick_pdf_lang = st.selectbox("Lang", ["EN", "FR"], key="quick_pdf_lang", label_visibility="collapsed")
+
+                with action_cols[2]:
                     if st.button("👁 View Patient", use_container_width=True):
                         with get_db_connection() as conn:
                             patient_query = "SELECT patient_id FROM results WHERE id = ?"
@@ -4322,23 +4414,26 @@ def main():
                             if not result.empty:
                                 st.session_state.selected_patient_id = result.iloc[0]['patient_id']
                                 st.session_state.selected_result_id = view_id
+                                st.session_state.show_patient_selected_msg = True
                                 st.rerun()
                             else:
                                 st.error(f"Report ID {view_id} not found")
 
-                with action_cols[2]:
+                with action_cols[3]:
+                    quick_lang_code = 'en' if quick_pdf_lang == "EN" else 'fr'
                     if st.button("📄 Generate PDF", use_container_width=True):
-                        pdf_data = generate_pdf_report(view_id, lang=config.get('REPORT_LANGUAGE', 'en'))
+                        pdf_data = generate_pdf_report(view_id, lang=quick_lang_code)
                         if pdf_data:
-                            st.download_button("⬇️ Download", pdf_data, f"Report_{view_id}.pdf", "application/pdf", key="quick_pdf_download")
+                            lang_suffix = "_FR" if quick_lang_code == 'fr' else "_EN"
+                            st.download_button("⬇️ Download", pdf_data, f"Report_{view_id}{lang_suffix}.pdf", "application/pdf", key="quick_pdf_download")
                         else:
                             st.error("Report not found")
 
-                with action_cols[3]:
+                with action_cols[4]:
                     if st.button("🗑️ Delete Record", use_container_width=True):
                         st.session_state.show_delete_confirm = view_id
 
-                with action_cols[4]:
+                with action_cols[5]:
                     if st.button("✏️ Edit Result", use_container_width=True):
                         with get_db_connection() as conn:
                             patient_query = "SELECT patient_id FROM results WHERE id = ?"
@@ -4346,7 +4441,15 @@ def main():
                             if not result.empty:
                                 st.session_state.selected_patient_id = result.iloc[0]['patient_id']
                                 st.session_state.selected_result_id = view_id
+                                st.session_state.show_patient_selected_msg = True
                                 st.rerun()
+                            else:
+                                st.error(f"Report ID {view_id} not found")
+
+                # Show message when patient is selected
+                if st.session_state.get('show_patient_selected_msg') and st.session_state.get('selected_patient_id'):
+                    st.success("✅ Patient selected! Click the **'👤 Patient Details'** tab above to view/edit.")
+                    st.session_state.show_patient_selected_msg = False
 
                 # Delete confirmation dialog
                 if st.session_state.get('show_delete_confirm'):
@@ -4372,6 +4475,10 @@ def main():
 
         # ==================== TAB 2: PATIENT DETAILS ====================
         with registry_tabs[1]:
+            # Show currently selected patient banner if applicable
+            if st.session_state.get('selected_patient_id'):
+                st.info(f"📌 **Patient Selected** - Scroll down to view/edit patient details. Use search below to select a different patient.")
+
             st.markdown("### Find Patient")
 
             patient_search_col, patient_btn_col = st.columns([3, 1])
@@ -4480,7 +4587,7 @@ def main():
                             patient_results = pd.read_sql(results_query, conn, params=(patient_id,))
 
                         if not patient_results.empty:
-                            st.markdown(f"**{len(patient_results)} Test Result(s)**")
+                            st.markdown(f"**{len(patient_results)} Test Result(s)** - Select a result to edit or generate PDF")
 
                             for _, r_row in patient_results.iterrows():
                                 result_dict = r_row.to_dict()
@@ -4488,9 +4595,20 @@ def main():
 
                                 with st.container():
                                     render_test_result_card(result_dict, card_key=f"res_{r_row['id']}")
-                                    if st.button(f"✏️ Edit Result #{r_row['id']}", key=f"edit_res_{r_row['id']}"):
-                                        st.session_state.selected_result_id = r_row['id']
-                                        st.rerun()
+                                    btn_cols = st.columns([1, 1, 1, 3])
+                                    with btn_cols[0]:
+                                        if st.button(f"✏️ Edit", key=f"edit_res_{r_row['id']}", use_container_width=True):
+                                            st.session_state.selected_result_id = r_row['id']
+                                            st.rerun()
+                                    with btn_cols[1]:
+                                        pdf_en = generate_pdf_report(r_row['id'], lang='en')
+                                        if pdf_en:
+                                            st.download_button("📄 PDF EN", pdf_en, f"Report_{r_row['id']}_EN.pdf", "application/pdf", key=f"pdf_en_{r_row['id']}", use_container_width=True)
+                                    with btn_cols[2]:
+                                        pdf_fr = generate_pdf_report(r_row['id'], lang='fr')
+                                        if pdf_fr:
+                                            st.download_button("📄 PDF FR", pdf_fr, f"Report_{r_row['id']}_FR.pdf", "application/pdf", key=f"pdf_fr_{r_row['id']}", use_container_width=True)
+                                    st.markdown("---")
 
                             # Edit form for selected result
                             if st.session_state.get('selected_result_id'):

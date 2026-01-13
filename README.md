@@ -1,6 +1,6 @@
 # NRIS - NIPT Result Interpretation Software
 
-**Version 2.2 Enhanced Edition**
+**Version 2.4 Enhanced Edition**
 *Advanced Clinical Genetics Dashboard with Bilingual Support, Enhanced Security & Reliability*
 
 ---
@@ -79,6 +79,48 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
   - Database integrity verification
   - Desktop shortcut creator for one-click access
   - Auto browser open - no manual link copying
+
+---
+
+## What's New in v2.4
+
+### Enhanced Analysis Report Display
+- **Comprehensive Post-Analysis View**: After saving and analyzing a sample, the results are now displayed in a well-structured, professional format
+- Complete patient demographics (name, MRN, age, gestational weeks)
+- QC metrics display with all sequencing parameters (Reads, Cff, GC, QS, Unique %, Error %)
+- Trisomy results with Z-scores in metric cards showing status at a glance
+- Sex chromosome analysis with Z-XX and Z-XY values
+- CNV and RAT findings clearly organized
+- Color-coded final result banner with reportable status indicator
+
+### Registry Improvements
+- **French PDF Quick Access**: Quick actions in Browse & Search now include a language selector (EN/FR) for instant PDF generation
+- **Patient Selection Feedback**: Clear success messages guide users to the Patient Details tab after selecting a patient
+- **Multi-Result PDF Buttons**: Each test result in Patient Details has dedicated English and French PDF download buttons
+- **Selection Banner**: Patient Details tab shows a prominent banner when a patient is already selected
+
+### User Experience Polish
+- Improved navigation flow between Browse and Patient Details tabs
+- Better visual feedback for all user actions
+- Cleaner layout for multiple test results per patient
+
+---
+
+## What's New in v2.3
+
+### Patient Info Cards
+- Registry now displays individual patient info cards instead of tables for better data visualization
+- Color-coded status indicators for quick result identification
+
+### Multi-Anomaly Analytics
+- Stats dashboard properly handles samples with multiple anomalies (T21+T18, etc.)
+- Dedicated breakdown charts for complex cases
+
+### Enhanced Analysis Features
+- SCA analysis: Detailed sex chromosome anomaly tracking and visualization
+- CNV/RAT tracking: Comprehensive copy number variant and rare autosomal trisomy statistics
+- Test result cards with color-coded status indicators
+- Improved pagination for large datasets
 
 ---
 
@@ -485,7 +527,29 @@ Periodically copy these files to an external location:
 
 ## Version History
 
-### Version 2.2 (Current)
+### Version 2.4 (Current)
+**Analysis Report**
+- Comprehensive post-analysis display with patient info, QC metrics, results
+- Color-coded trisomy and SCA results with Z-scores
+- Reportable status indicator
+
+**Registry**
+- French/English PDF language selector in quick actions
+- Multi-result PDF buttons per test result
+- Clear navigation feedback and patient selection banners
+
+**User Experience**
+- Improved navigation flow between tabs
+- Better visual feedback for all actions
+
+### Version 2.3
+**Display Improvements**
+- Patient info cards in registry
+- Multi-anomaly analytics support
+- SCA tracking and visualization
+- CNV/RAT statistics in analytics
+
+### Version 2.2
 **Data Protection**
 - Automatic database backup on every startup
 - SQLite WAL mode for crash resilience
@@ -585,4 +649,4 @@ This software is designed to assist healthcare professionals in interpreting NIP
 
 ---
 
-**NRIS v2.2 Enhanced Edition** - Advancing Clinical Genetics Through Technology
+**NRIS v2.4 Enhanced Edition** - Advancing Clinical Genetics Through Technology
