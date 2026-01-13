@@ -1,9 +1,21 @@
 """
-NIPT Result Interpretation Software (NRIS) v2.2 - Enhanced Edition
+NIPT Result Interpretation Software (NRIS) v2.3 - Enhanced Edition
 By AzizElGhezal
 ---------------------------
 Advanced clinical genetics dashboard with authentication, analytics,
 PDF reports, visualizations, and comprehensive audit logging.
+
+Version 2.3 Improvements:
+- Patient info cards: Registry now displays individual patient info cards
+  instead of tables for better data visualization
+- Multi-anomaly analytics: Stats dashboard properly handles samples with
+  multiple anomalies (T21+T18, etc.) with dedicated breakdown charts
+- SCA analysis: Detailed sex chromosome anomaly tracking and visualization
+- CNV/RAT tracking: Comprehensive copy number variant and rare autosomal
+  trisomy statistics in the analytics dashboard
+- Test result cards: Patient modification section shows styled result cards
+  with color-coded status indicators
+- Improved pagination: Registry supports paginated card view for large datasets
 
 Version 2.2 Improvements:
 - Bilingual PDF reports (English and French)
@@ -2929,63 +2941,381 @@ def generate_pdf_report(report_id: int, lang: str = None) -> Optional[bytes]:
         st.error(f"PDF generation error: {e}")
         return None
 
+# ==================== PATIENT INFO CARD RENDERING ====================
+
+def render_patient_info_card(record: Dict, show_full_details: bool = False, card_key: str = ""):
+    """Render a styled patient information card.
+
+    Args:
+        record: Dictionary containing patient/result data
+        show_full_details: Whether to show all details or a compact view
+        card_key: Unique key for interactive elements
+    """
+    # Determine color based on final summary
+    summary = str(record.get('final_summary', '')).upper()
+    qc_status = str(record.get('qc_status', 'PASS')).upper()
+
+    if 'POSITIVE' in summary:
+        border_color = "#E74C3C"  # Red
+        bg_color = "#FDEDEC"
+        status_emoji = "🔴"
+    elif 'FAIL' in qc_status or 'INVALID' in summary:
+        border_color = "#E74C3C"  # Red
+        bg_color = "#FDEDEC"
+        status_emoji = "⚠️"
+    elif 'WARNING' in qc_status or 'HIGH RISK' in summary:
+        border_color = "#F39C12"  # Orange
+        bg_color = "#FEF9E7"
+        status_emoji = "🟠"
+    else:
+        border_color = "#27AE60"  # Green
+        bg_color = "#EAFAF1"
+        status_emoji = "🟢"
+
+    # Extract z-scores from JSON
+    full_z = record.get('full_z_json', '{}')
+    if isinstance(full_z, str):
+        try:
+            z_data = json.loads(full_z) if full_z and full_z != '{}' else {}
+        except:
+            z_data = {}
+    else:
+        z_data = full_z or {}
+
+    z21 = z_data.get('21', z_data.get(21, 'N/A'))
+    z18 = z_data.get('18', z_data.get(18, 'N/A'))
+    z13 = z_data.get('13', z_data.get(13, 'N/A'))
+    z_xx = z_data.get('XX', 'N/A')
+    z_xy = z_data.get('XY', 'N/A')
+
+    # Format z-scores
+    z21_str = f"{float(z21):.2f}" if z21 != 'N/A' and z21 is not None else 'N/A'
+    z18_str = f"{float(z18):.2f}" if z18 != 'N/A' and z18 is not None else 'N/A'
+    z13_str = f"{float(z13):.2f}" if z13 != 'N/A' and z13 is not None else 'N/A'
+
+    # Get reportable status
+    t21_res = record.get('t21_res', '')
+    qc_override = bool(record.get('qc_override', 0))
+    effective_qc = 'PASS' if qc_override else qc_status
+    reportable, reportable_reason = get_reportable_status(str(t21_res), effective_qc, qc_override)
+
+    # Card HTML/Markdown
+    st.markdown(f"""
+    <div style="
+        border: 2px solid {border_color};
+        border-radius: 12px;
+        padding: 16px;
+        margin: 10px 0;
+        background-color: {bg_color};
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    ">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <div>
+                <span style="font-size: 1.3em; font-weight: bold; color: #2C3E50;">
+                    {status_emoji} {record.get('full_name', 'Unknown')}
+                </span>
+                <span style="background: #3498DB; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; margin-left: 10px;">
+                    ID #{record.get('id', 'N/A')}
+                </span>
+            </div>
+            <div style="text-align: right; color: #7F8C8D; font-size: 0.9em;">
+                {record.get('created_at', 'N/A')[:16] if record.get('created_at') else 'N/A'}
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 12px;">
+            <div style="background: white; padding: 8px; border-radius: 6px;">
+                <div style="font-size: 0.8em; color: #7F8C8D;">MRN</div>
+                <div style="font-weight: 600; color: #2C3E50;">{record.get('mrn_id', 'N/A')}</div>
+            </div>
+            <div style="background: white; padding: 8px; border-radius: 6px;">
+                <div style="font-size: 0.8em; color: #7F8C8D;">Panel</div>
+                <div style="font-weight: 600; color: #2C3E50;">{record.get('panel_type', 'N/A')}</div>
+            </div>
+            <div style="background: white; padding: 8px; border-radius: 6px;">
+                <div style="font-size: 0.8em; color: #7F8C8D;">QC Status</div>
+                <div style="font-weight: 600; color: {'#27AE60' if effective_qc == 'PASS' else '#E74C3C' if effective_qc == 'FAIL' else '#F39C12'};">
+                    {effective_qc}{'*' if qc_override else ''}
+                </div>
+            </div>
+        </div>
+
+        <div style="background: white; padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+            <div style="font-size: 0.85em; color: #7F8C8D; margin-bottom: 8px;">Trisomy Results</div>
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
+                <div style="text-align: center;">
+                    <div style="font-size: 0.75em; color: #95A5A6;">T21</div>
+                    <div style="font-weight: 600; color: #2C3E50;">{record.get('t21_res', 'N/A')}</div>
+                    <div style="font-size: 0.75em; color: #7F8C8D;">Z: {z21_str}</div>
+                </div>
+                <div style="text-align: center;">
+                    <div style="font-size: 0.75em; color: #95A5A6;">T18</div>
+                    <div style="font-weight: 600; color: #2C3E50;">{record.get('t18_res', 'N/A')}</div>
+                    <div style="font-size: 0.75em; color: #7F8C8D;">Z: {z18_str}</div>
+                </div>
+                <div style="text-align: center;">
+                    <div style="font-size: 0.75em; color: #95A5A6;">T13</div>
+                    <div style="font-weight: 600; color: #2C3E50;">{record.get('t13_res', 'N/A')}</div>
+                    <div style="font-size: 0.75em; color: #7F8C8D;">Z: {z13_str}</div>
+                </div>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div style="background: white; padding: 10px; border-radius: 6px;">
+                <div style="font-size: 0.8em; color: #7F8C8D;">SCA Result</div>
+                <div style="font-weight: 600; color: #2C3E50;">{record.get('sca_res', 'N/A')}</div>
+            </div>
+            <div style="background: white; padding: 10px; border-radius: 6px;">
+                <div style="font-size: 0.8em; color: #7F8C8D;">Reportable</div>
+                <div style="font-weight: 600; color: {'#27AE60' if reportable == 'Yes' else '#E74C3C'};">
+                    {reportable} {f'({reportable_reason})' if reportable == 'No' else ''}
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 12px; padding: 10px; background: {'#27AE60' if 'NEGATIVE' in summary else '#E74C3C' if 'POSITIVE' in summary or 'INVALID' in summary else '#F39C12'}; border-radius: 6px; text-align: center;">
+            <span style="color: white; font-weight: 700; font-size: 1.1em;">
+                {record.get('final_summary', 'N/A')}
+            </span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_test_result_card(result: Dict, show_actions: bool = False, card_key: str = ""):
+    """Render a styled test result card for the patient details section.
+
+    Args:
+        result: Dictionary containing test result data
+        show_actions: Whether to show action buttons
+        card_key: Unique key for interactive elements
+    """
+    # Determine color based on status
+    qc_status = str(result.get('qc_status', 'PASS')).upper()
+    qc_override = bool(result.get('qc_override', 0))
+    final_summary = str(result.get('final_summary', '')).upper()
+
+    effective_qc = 'PASS' if qc_override else qc_status
+
+    if 'POSITIVE' in final_summary:
+        border_color = "#E74C3C"
+        bg_color = "#FDEDEC"
+        status_icon = "🔴"
+    elif 'FAIL' in effective_qc or 'INVALID' in final_summary:
+        border_color = "#E74C3C"
+        bg_color = "#FDEDEC"
+        status_icon = "⚠️"
+    elif 'WARNING' in effective_qc or 'HIGH RISK' in final_summary:
+        border_color = "#F39C12"
+        bg_color = "#FEF9E7"
+        status_icon = "🟠"
+    else:
+        border_color = "#27AE60"
+        bg_color = "#EAFAF1"
+        status_icon = "🟢"
+
+    created_at = result.get('created_at', 'N/A')
+    if isinstance(created_at, str) and len(created_at) > 16:
+        created_at = created_at[:16]
+
+    st.markdown(f"""
+    <div style="
+        border: 2px solid {border_color};
+        border-radius: 10px;
+        padding: 14px;
+        margin: 8px 0;
+        background-color: {bg_color};
+    ">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <div>
+                <span style="font-weight: bold; font-size: 1.1em;">
+                    {status_icon} Result #{result.get('id', 'N/A')}
+                </span>
+                <span style="background: #9B59B6; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 8px;">
+                    {result.get('panel_type', 'N/A')}
+                </span>
+            </div>
+            <div style="color: #7F8C8D; font-size: 0.85em;">{created_at}</div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px;">
+            <div style="background: white; padding: 6px; border-radius: 4px; text-align: center;">
+                <div style="font-size: 0.7em; color: #95A5A6;">T21</div>
+                <div style="font-size: 0.9em; font-weight: 600;">{result.get('t21_res', 'N/A')}</div>
+            </div>
+            <div style="background: white; padding: 6px; border-radius: 4px; text-align: center;">
+                <div style="font-size: 0.7em; color: #95A5A6;">T18</div>
+                <div style="font-size: 0.9em; font-weight: 600;">{result.get('t18_res', 'N/A')}</div>
+            </div>
+            <div style="background: white; padding: 6px; border-radius: 4px; text-align: center;">
+                <div style="font-size: 0.7em; color: #95A5A6;">T13</div>
+                <div style="font-size: 0.9em; font-weight: 600;">{result.get('t13_res', 'N/A')}</div>
+            </div>
+            <div style="background: white; padding: 6px; border-radius: 4px; text-align: center;">
+                <div style="font-size: 0.7em; color: #95A5A6;">SCA</div>
+                <div style="font-size: 0.9em; font-weight: 600;">{result.get('sca_res', 'N/A')}</div>
+            </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="background: white; padding: 6px 12px; border-radius: 4px;">
+                <span style="font-size: 0.8em; color: #7F8C8D;">QC: </span>
+                <span style="font-weight: 600; color: {'#27AE60' if effective_qc == 'PASS' else '#E74C3C' if effective_qc == 'FAIL' else '#F39C12'};">
+                    {effective_qc}{'*' if qc_override else ''}
+                </span>
+            </div>
+            <div style="padding: 6px 12px; border-radius: 4px; background: {'#27AE60' if 'NEGATIVE' in final_summary else '#E74C3C' if 'POSITIVE' in final_summary or 'INVALID' in final_summary else '#F39C12'}; color: white; font-weight: 600;">
+                {result.get('final_summary', 'N/A')}
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 # ==================== ANALYTICS ====================
 
 @st.cache_data(ttl=60)  # Cache for 60 seconds
 def get_analytics_data() -> Dict:
-    """Fetch analytics data with caching for better performance."""
+    """Fetch comprehensive analytics data with proper multi-anomaly handling."""
     try:
         with get_db_connection() as conn:
-            # Combined query for basic stats to reduce database calls
-            stats_query = """
-                SELECT
-                    COUNT(*) as total,
-                    SUM(CASE WHEN qc_status = 'PASS' THEN 1 ELSE 0 END) as qc_pass,
-                    SUM(CASE WHEN qc_status = 'FAIL' THEN 1 ELSE 0 END) as qc_fail,
-                    SUM(CASE WHEN qc_status = 'WARNING' THEN 1 ELSE 0 END) as qc_warning,
-                    SUM(CASE WHEN t21_res LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as t21,
-                    SUM(CASE WHEN t18_res LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as t18,
-                    SUM(CASE WHEN t13_res LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as t13
-                FROM results
-            """
-            stats = pd.read_sql(stats_query, conn)
-
-            # Get counts from combined query
-            total = stats.iloc[0]['total'] if not stats.empty else 0
-
-            # QC stats as DataFrame
-            qc_stats = pd.DataFrame({
-                'qc_status': ['PASS', 'FAIL', 'WARNING'],
-                'count': [
-                    stats.iloc[0]['qc_pass'] or 0,
-                    stats.iloc[0]['qc_fail'] or 0,
-                    stats.iloc[0]['qc_warning'] or 0
-                ]
-            })
-
-            # Trisomy stats
-            trisomies = pd.DataFrame({
-                't21': [stats.iloc[0]['t21'] or 0],
-                't18': [stats.iloc[0]['t18'] or 0],
-                't13': [stats.iloc[0]['t13'] or 0]
-            })
-
-            # These queries still need to be separate
-            outcomes = pd.read_sql(
-                "SELECT final_summary, COUNT(*) as count FROM results GROUP BY final_summary",
-                conn
-            )
-            recent = pd.read_sql("""
-                SELECT DATE(created_at) as date, COUNT(*) as count
-                FROM results
-                WHERE created_at >= date('now', '-30 days')
-                GROUP BY DATE(created_at)
-                ORDER BY date
+            # Fetch all results for detailed analysis
+            all_results = pd.read_sql("""
+                SELECT r.id, r.created_at, r.panel_type, r.qc_status, r.qc_override,
+                       r.t21_res, r.t18_res, r.t13_res, r.sca_res, r.final_summary,
+                       r.cnv_json, r.rat_json, r.full_z_json
+                FROM results r
             """, conn)
-            panels = pd.read_sql(
-                "SELECT panel_type, COUNT(*) as count FROM results GROUP BY panel_type",
-                conn
+
+            if all_results.empty:
+                return get_empty_analytics()
+
+            total = len(all_results)
+
+            # QC stats (accounting for overrides)
+            all_results['effective_qc'] = all_results.apply(
+                lambda r: 'PASS' if r.get('qc_override') else r['qc_status'], axis=1
             )
+            qc_stats = all_results['effective_qc'].value_counts().reset_index()
+            qc_stats.columns = ['qc_status', 'count']
+
+            # Ensure all QC statuses are present
+            for status in ['PASS', 'FAIL', 'WARNING']:
+                if status not in qc_stats['qc_status'].values:
+                    qc_stats = pd.concat([qc_stats, pd.DataFrame({'qc_status': [status], 'count': [0]})])
+
+            # Analyze each sample for anomalies
+            def analyze_sample_anomalies(row):
+                anomalies = []
+                t21 = str(row.get('t21_res', '')).upper()
+                t18 = str(row.get('t18_res', '')).upper()
+                t13 = str(row.get('t13_res', '')).upper()
+                sca = str(row.get('sca_res', '')).upper()
+
+                if 'POSITIVE' in t21 or 'HIGH' in t21:
+                    anomalies.append('T21')
+                if 'POSITIVE' in t18 or 'HIGH' in t18:
+                    anomalies.append('T18')
+                if 'POSITIVE' in t13 or 'HIGH' in t13:
+                    anomalies.append('T13')
+                # SCA anomalies (exclude normal XX/XY)
+                if sca and 'POSITIVE' in sca or any(x in sca for x in ['XO', 'XXX', 'XXY', 'XYY', 'MOSAIC']):
+                    anomalies.append('SCA')
+
+                # Check for CNV findings
+                cnv_json = row.get('cnv_json', '[]')
+                if cnv_json and cnv_json != '[]':
+                    try:
+                        cnv_list = json.loads(cnv_json) if isinstance(cnv_json, str) else cnv_json
+                        if cnv_list and len(cnv_list) > 0:
+                            anomalies.append('CNV')
+                    except:
+                        pass
+
+                # Check for RAT findings
+                rat_json = row.get('rat_json', '[]')
+                if rat_json and rat_json != '[]':
+                    try:
+                        rat_list = json.loads(rat_json) if isinstance(rat_json, str) else rat_json
+                        if rat_list and len(rat_list) > 0:
+                            anomalies.append('RAT')
+                    except:
+                        pass
+
+                return anomalies
+
+            all_results['anomalies'] = all_results.apply(analyze_sample_anomalies, axis=1)
+            all_results['anomaly_count'] = all_results['anomalies'].apply(len)
+
+            # Multi-anomaly breakdown
+            anomaly_count_dist = all_results['anomaly_count'].value_counts().reset_index()
+            anomaly_count_dist.columns = ['anomaly_count', 'samples']
+            anomaly_count_dist = anomaly_count_dist.sort_values('anomaly_count')
+
+            # Individual anomaly counts (samples can have multiple)
+            anomaly_types = {'T21': 0, 'T18': 0, 'T13': 0, 'SCA': 0, 'CNV': 0, 'RAT': 0}
+            for anomaly_list in all_results['anomalies']:
+                for anomaly in anomaly_list:
+                    if anomaly in anomaly_types:
+                        anomaly_types[anomaly] += 1
+
+            anomaly_breakdown = pd.DataFrame({
+                'Anomaly Type': list(anomaly_types.keys()),
+                'Count': list(anomaly_types.values())
+            })
+
+            # SCA type breakdown
+            def extract_sca_type(sca_res):
+                sca = str(sca_res).upper()
+                if 'XO+XY' in sca or 'XXX+XY' in sca:
+                    return 'Mosaic'
+                elif 'XO' in sca or 'TURNER' in sca:
+                    return 'XO (Turner)'
+                elif 'XXY' in sca or 'KLINEFELTER' in sca:
+                    return 'XXY (Klinefelter)'
+                elif 'XXX' in sca:
+                    return 'XXX (Triple X)'
+                elif 'XYY' in sca:
+                    return 'XYY (Jacob)'
+                elif 'FEMALE' in sca or 'XX' in sca:
+                    return 'XX (Female)'
+                elif 'MALE' in sca or 'XY' in sca:
+                    return 'XY (Male)'
+                else:
+                    return 'Unknown'
+
+            all_results['sca_type'] = all_results['sca_res'].apply(extract_sca_type)
+            sca_breakdown = all_results['sca_type'].value_counts().reset_index()
+            sca_breakdown.columns = ['SCA Type', 'Count']
+
+            # Outcomes
+            outcomes = all_results['final_summary'].value_counts().reset_index()
+            outcomes.columns = ['final_summary', 'count']
+
+            # Recent activity (30 days)
+            all_results['date'] = pd.to_datetime(all_results['created_at']).dt.date
+            thirty_days_ago = (datetime.now() - timedelta(days=30)).date()
+            recent_results = all_results[all_results['date'] >= thirty_days_ago]
+            recent = recent_results.groupby('date').size().reset_index(name='count')
+            recent['date'] = pd.to_datetime(recent['date'])
+
+            # Panel distribution
+            panels = all_results['panel_type'].value_counts().reset_index()
+            panels.columns = ['panel_type', 'count']
+
+            # Multi-anomaly samples detail
+            multi_anomaly_samples = all_results[all_results['anomaly_count'] > 1][
+                ['id', 'anomalies', 'anomaly_count', 'final_summary']
+            ].copy()
+            multi_anomaly_samples['anomalies'] = multi_anomaly_samples['anomalies'].apply(lambda x: ', '.join(x))
+
+            # Trisomy stats for backward compatibility
+            trisomies = pd.DataFrame({
+                't21': [anomaly_types['T21']],
+                't18': [anomaly_types['T18']],
+                't13': [anomaly_types['T13']]
+            })
 
             return {
                 'total': total,
@@ -2993,79 +3323,257 @@ def get_analytics_data() -> Dict:
                 'outcomes': outcomes,
                 'trisomies': trisomies,
                 'recent': recent,
-                'panels': panels
+                'panels': panels,
+                'anomaly_breakdown': anomaly_breakdown,
+                'anomaly_count_dist': anomaly_count_dist,
+                'sca_breakdown': sca_breakdown,
+                'multi_anomaly_samples': multi_anomaly_samples,
+                'samples_with_anomalies': len(all_results[all_results['anomaly_count'] > 0]),
+                'multi_anomaly_count': len(all_results[all_results['anomaly_count'] > 1])
             }
     except Exception as e:
         st.error(f"Error loading analytics: {e}")
-        return {
-            'total': 0,
-            'qc_stats': pd.DataFrame({'qc_status': [], 'count': []}),
-            'outcomes': pd.DataFrame({'final_summary': [], 'count': []}),
-            'trisomies': pd.DataFrame({'t21': [0], 't18': [0], 't13': [0]}),
-            'recent': pd.DataFrame({'date': [], 'count': []}),
-            'panels': pd.DataFrame({'panel_type': [], 'count': []})
-        }
+        return get_empty_analytics()
+
+
+def get_empty_analytics() -> Dict:
+    """Return empty analytics data structure."""
+    return {
+        'total': 0,
+        'qc_stats': pd.DataFrame({'qc_status': ['PASS', 'FAIL', 'WARNING'], 'count': [0, 0, 0]}),
+        'outcomes': pd.DataFrame({'final_summary': [], 'count': []}),
+        'trisomies': pd.DataFrame({'t21': [0], 't18': [0], 't13': [0]}),
+        'recent': pd.DataFrame({'date': [], 'count': []}),
+        'panels': pd.DataFrame({'panel_type': [], 'count': []}),
+        'anomaly_breakdown': pd.DataFrame({'Anomaly Type': [], 'Count': []}),
+        'anomaly_count_dist': pd.DataFrame({'anomaly_count': [], 'samples': []}),
+        'sca_breakdown': pd.DataFrame({'SCA Type': [], 'Count': []}),
+        'multi_anomaly_samples': pd.DataFrame({'id': [], 'anomalies': [], 'anomaly_count': [], 'final_summary': []}),
+        'samples_with_anomalies': 0,
+        'multi_anomaly_count': 0
+    }
+
 
 def render_analytics_dashboard():
-    """Render analytics dashboard."""
+    """Render comprehensive analytics dashboard with multi-anomaly support."""
     st.header("📊 Analytics Dashboard")
-    
+
     data = get_analytics_data()
-    
-    col1, col2, col3, col4 = st.columns(4)
+
+    # Top-level metrics
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.metric("Total Tests", data['total'])
+        st.metric("📋 Total Tests", data['total'])
     with col2:
-        pass_rate = (data['qc_stats'][data['qc_stats']['qc_status'] == 'PASS']['count'].sum() / data['total'] * 100) if data['total'] > 0 else 0
-        st.metric("QC Pass Rate", f"{pass_rate:.1f}%")
+        qc_pass = data['qc_stats'][data['qc_stats']['qc_status'] == 'PASS']['count'].sum()
+        pass_rate = (qc_pass / data['total'] * 100) if data['total'] > 0 else 0
+        st.metric("✅ QC Pass Rate", f"{pass_rate:.1f}%")
     with col3:
-        pos = data['outcomes'][data['outcomes']['final_summary'].str.contains('POSITIVE', na=False)]['count'].sum()
-        st.metric("Positive", pos)
+        st.metric("🔬 Samples w/ Anomalies", data['samples_with_anomalies'])
     with col4:
-        fail = data['qc_stats'][data['qc_stats']['qc_status'] == 'FAIL']['count'].sum()
-        st.metric("QC Fail", fail)
-    
+        st.metric("⚠️ Multi-Anomaly", data['multi_anomaly_count'])
+    with col5:
+        qc_fail = data['qc_stats'][data['qc_stats']['qc_status'] == 'FAIL']['count'].sum()
+        st.metric("❌ QC Fail", int(qc_fail))
+
     st.divider()
-    
+
+    # Row 1: QC and Outcomes
     c1, c2 = st.columns(2)
-    
+
     with c1:
-        st.subheader("QC Distribution")
-        if not data['qc_stats'].empty:
-            fig = px.pie(data['qc_stats'], values='count', names='qc_status',
-                        color_discrete_map={'PASS': '#2ECC71', 'FAIL': '#E74C3C', 'WARNING': '#F39C12'})
+        st.subheader("🔍 QC Status Distribution")
+        if not data['qc_stats'].empty and data['qc_stats']['count'].sum() > 0:
+            fig = px.pie(
+                data['qc_stats'],
+                values='count',
+                names='qc_status',
+                color='qc_status',
+                color_discrete_map={'PASS': '#27AE60', 'FAIL': '#E74C3C', 'WARNING': '#F39C12'},
+                hole=0.4
+            )
+            fig.update_traces(textposition='inside', textinfo='percent+value')
+            fig.update_layout(showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=-0.2))
             st.plotly_chart(fig, use_container_width=True)
-    
+        else:
+            st.info("No QC data available")
+
     with c2:
-        st.subheader("Outcomes")
+        st.subheader("📊 Test Outcomes")
         if not data['outcomes'].empty:
-            fig = px.bar(data['outcomes'], x='final_summary', y='count', text='count')
+            # Color mapping for outcomes
+            outcome_colors = {
+                'NEGATIVE': '#27AE60',
+                'POSITIVE DETECTED': '#E74C3C',
+                'HIGH RISK (SEE ADVICE)': '#F39C12',
+                'INVALID (QC FAIL)': '#95A5A6'
+            }
+            fig = px.bar(
+                data['outcomes'],
+                x='final_summary',
+                y='count',
+                text='count',
+                color='final_summary',
+                color_discrete_map=outcome_colors
+            )
+            fig.update_traces(textposition='outside')
+            fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Count")
             st.plotly_chart(fig, use_container_width=True)
-    
+        else:
+            st.info("No outcome data available")
+
+    st.divider()
+
+    # Row 2: Anomaly Analysis (NEW - handles multiple anomalies per sample)
+    st.subheader("🧬 Anomaly Analysis")
+    st.caption("*Note: Samples can have multiple anomalies, so totals may exceed sample count*")
+
     c3, c4 = st.columns(2)
-    
+
     with c3:
-        st.subheader("Trisomy Detection")
-        if not data['trisomies'].empty:
-            tris_df = pd.DataFrame({
-                'Type': ['T21', 'T18', 'T13'],
-                'Count': [data['trisomies'].iloc[0]['t21'], 
-                         data['trisomies'].iloc[0]['t18'],
-                         data['trisomies'].iloc[0]['t13']]
-            })
-            fig = px.bar(tris_df, x='Type', y='Count', color='Type', text='Count')
-            st.plotly_chart(fig, use_container_width=True)
-    
+        st.markdown("**Anomaly Type Breakdown**")
+        if not data['anomaly_breakdown'].empty and data['anomaly_breakdown']['Count'].sum() > 0:
+            # Filter to show only non-zero anomalies
+            filtered_anomalies = data['anomaly_breakdown'][data['anomaly_breakdown']['Count'] > 0]
+            if not filtered_anomalies.empty:
+                fig = px.bar(
+                    filtered_anomalies,
+                    x='Anomaly Type',
+                    y='Count',
+                    text='Count',
+                    color='Anomaly Type',
+                    color_discrete_map={
+                        'T21': '#3498DB',
+                        'T18': '#9B59B6',
+                        'T13': '#1ABC9C',
+                        'SCA': '#E74C3C',
+                        'CNV': '#F39C12',
+                        'RAT': '#34495E'
+                    }
+                )
+                fig.update_traces(textposition='outside')
+                fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Occurrences")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.success("No anomalies detected in any samples")
+        else:
+            st.success("No anomalies detected in any samples")
+
     with c4:
-        st.subheader("Panel Types")
-        if not data['panels'].empty:
-            fig = px.pie(data['panels'], values='count', names='panel_type')
+        st.markdown("**Samples by Anomaly Count**")
+        if not data['anomaly_count_dist'].empty:
+            # Create labels
+            data['anomaly_count_dist']['label'] = data['anomaly_count_dist']['anomaly_count'].apply(
+                lambda x: 'Normal (0)' if x == 0 else f'{x} Anomaly' if x == 1 else f'{x} Anomalies'
+            )
+            fig = px.pie(
+                data['anomaly_count_dist'],
+                values='samples',
+                names='label',
+                hole=0.4,
+                color_discrete_sequence=px.colors.sequential.RdBu
+            )
+            fig.update_traces(textposition='inside', textinfo='percent+value')
+            fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=-0.3))
             st.plotly_chart(fig, use_container_width=True)
-    
-    st.subheader("Activity (30 Days)")
+        else:
+            st.info("No distribution data available")
+
+    st.divider()
+
+    # Row 3: SCA and Panel Distribution
+    c5, c6 = st.columns(2)
+
+    with c5:
+        st.subheader("🧬 Sex Chromosome Analysis")
+        if not data['sca_breakdown'].empty:
+            # Separate normal from abnormal SCA
+            normal_sca = data['sca_breakdown'][data['sca_breakdown']['SCA Type'].isin(['XX (Female)', 'XY (Male)'])]
+            abnormal_sca = data['sca_breakdown'][~data['sca_breakdown']['SCA Type'].isin(['XX (Female)', 'XY (Male)', 'Unknown'])]
+
+            if not abnormal_sca.empty and abnormal_sca['Count'].sum() > 0:
+                st.markdown("**SCA Anomalies Detected:**")
+                fig = px.bar(
+                    abnormal_sca,
+                    x='SCA Type',
+                    y='Count',
+                    text='Count',
+                    color='SCA Type',
+                    color_discrete_sequence=px.colors.qualitative.Set2
+                )
+                fig.update_traces(textposition='outside')
+                fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Count")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.success("No SCA anomalies detected")
+
+            # Show normal distribution
+            if not normal_sca.empty:
+                total_normal = normal_sca['Count'].sum()
+                xx_count = normal_sca[normal_sca['SCA Type'] == 'XX (Female)']['Count'].sum()
+                xy_count = normal_sca[normal_sca['SCA Type'] == 'XY (Male)']['Count'].sum()
+                st.caption(f"Normal SCA: {int(xx_count)} Female (XX) | {int(xy_count)} Male (XY)")
+        else:
+            st.info("No SCA data available")
+
+    with c6:
+        st.subheader("📦 Panel Type Distribution")
+        if not data['panels'].empty:
+            fig = px.pie(
+                data['panels'],
+                values='count',
+                names='panel_type',
+                hole=0.3,
+                color_discrete_sequence=px.colors.qualitative.Pastel
+            )
+            fig.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No panel data available")
+
+    st.divider()
+
+    # Row 4: Activity and Multi-Anomaly Details
+    st.subheader("📈 Testing Activity (Last 30 Days)")
     if not data['recent'].empty:
-        fig = px.line(data['recent'], x='date', y='count', markers=True)
+        fig = px.area(
+            data['recent'],
+            x='date',
+            y='count',
+            markers=True,
+            line_shape='spline'
+        )
+        fig.update_traces(fill='tozeroy', line_color='#3498DB')
+        fig.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Tests Performed",
+            hovermode='x unified'
+        )
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No recent activity data")
+
+    # Multi-anomaly samples table
+    if data['multi_anomaly_count'] > 0:
+        st.divider()
+        st.subheader("⚠️ Multi-Anomaly Samples")
+        st.caption("Samples with more than one detected anomaly requiring special attention")
+
+        multi_df = data['multi_anomaly_samples'].copy()
+        multi_df.columns = ['Result ID', 'Anomalies', 'Count', 'Final Summary']
+
+        # Style the dataframe
+        st.dataframe(
+            multi_df,
+            use_container_width=True,
+            column_config={
+                'Result ID': st.column_config.NumberColumn('ID', format='%d'),
+                'Anomalies': st.column_config.TextColumn('Detected Anomalies', width='medium'),
+                'Count': st.column_config.NumberColumn('# Anomalies', format='%d'),
+                'Final Summary': st.column_config.TextColumn('Summary', width='medium')
+            },
+            hide_index=True
+        )
 
 # ==================== UI MAIN ====================
 
@@ -3523,35 +4031,83 @@ def main():
 
             df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%Y-%m-%d %H:%M')
 
-            # Extract T21 Z-score from full_z_json for display
-            def extract_t21_z(z_json):
-                try:
-                    if z_json and z_json != '{}':
-                        z_data = json.loads(z_json)
-                        z21 = z_data.get('21', z_data.get(21, None))
-                        if z21 is not None:
-                            return f"{float(z21):.2f}"
-                except:
-                    pass
-                return 'N/A'
+            # Get more complete data for cards
+            with get_db_connection() as card_conn:
+                full_query = """
+                    SELECT r.id, r.created_at, p.full_name, p.mrn_id, p.age, p.weeks,
+                           r.panel_type, r.qc_status, r.qc_override, r.final_summary,
+                           r.full_z_json, r.t21_res, r.t18_res, r.t13_res, r.sca_res
+                    FROM results r
+                    JOIN patients p ON p.id = r.patient_id
+                    WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
+                    ORDER BY r.id DESC
+                """
+                full_df = pd.read_sql(full_query, card_conn)
 
-            df['T21_Z'] = df['full_z_json'].apply(extract_t21_z)
+            if search_term:
+                full_df = full_df[full_df['full_name'].str.contains(search_term, case=False, na=False) |
+                                  full_df['mrn_id'].str.contains(search_term, case=False, na=False)]
 
-            # Calculate Reportable status for T21 result
-            def get_t21_reportable(row):
-                qc_status = row['qc_status'] or 'PASS'
-                qc_override = bool(row.get('qc_override', 0))
-                effective_qc = 'PASS' if qc_override else qc_status
-                reportable, _ = get_reportable_status(str(row['t21_res']), effective_qc, qc_override)
-                return reportable
+            # Summary stats
+            total_records = len(full_df)
+            positive_count = len(full_df[full_df['final_summary'].str.contains('POSITIVE', case=False, na=False)])
+            qc_fail_count = len(full_df[(full_df['qc_status'] == 'FAIL') & (full_df['qc_override'] != 1)])
 
-            df['Reportable'] = df.apply(get_t21_reportable, axis=1)
+            stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+            with stat_col1:
+                st.metric("📋 Total Records", total_records)
+            with stat_col2:
+                st.metric("🔴 Positive", positive_count)
+            with stat_col3:
+                st.metric("⚠️ QC Fail", qc_fail_count)
+            with stat_col4:
+                st.metric("🟢 Negative", total_records - positive_count - qc_fail_count)
 
-            # Reorder columns for display (exclude raw JSON column)
-            display_df = df[['id', 'created_at', 'full_name', 'mrn_id', 'panel_type', 'qc_status', 't21_res', 'T21_Z', 'Reportable', 'final_summary']]
-            display_df.columns = ['ID', 'Date', 'Name', 'MRN', 'Panel', 'QC', 'T21 Result', 'T21 Z-Score', 'Reportable', 'Final Summary']
+            st.divider()
 
-            st.dataframe(display_df, use_container_width=True, height=400)
+            # Create patient selection dropdown for viewing detailed info
+            record_options = {f"#{row['id']} - {row['full_name']} ({row['mrn_id']}) - {row['final_summary']}": idx
+                             for idx, row in full_df.iterrows()}
+
+            col_select, col_view_mode = st.columns([3, 1])
+            with col_select:
+                selected_record_label = st.selectbox(
+                    "🔎 Select a record to view details",
+                    options=["-- Select a record --"] + list(record_options.keys()),
+                    key="registry_record_selector"
+                )
+            with col_view_mode:
+                show_all_cards = st.checkbox("Show all cards", value=False, help="Display all records as cards (may be slow for large datasets)")
+
+            # Display selected patient info card
+            if selected_record_label != "-- Select a record --":
+                idx = record_options[selected_record_label]
+                record = full_df.iloc[idx].to_dict()
+                record['created_at'] = str(record.get('created_at', ''))[:16]
+
+                st.markdown("### 📋 Selected Record Details")
+                render_patient_info_card(record)
+
+            # Optionally show all cards (paginated)
+            if show_all_cards:
+                st.markdown("### 📂 All Records")
+                # Pagination
+                items_per_page = 10
+                total_pages = max(1, (len(full_df) + items_per_page - 1) // items_per_page)
+
+                page_col1, page_col2, page_col3 = st.columns([1, 2, 1])
+                with page_col2:
+                    current_page = st.number_input("Page", min_value=1, max_value=total_pages, value=1, key="registry_page")
+
+                start_idx = (current_page - 1) * items_per_page
+                end_idx = min(start_idx + items_per_page, len(full_df))
+
+                st.caption(f"Showing {start_idx + 1}-{end_idx} of {len(full_df)} records")
+
+                for idx in range(start_idx, end_idx):
+                    record = full_df.iloc[idx].to_dict()
+                    record['created_at'] = str(record.get('created_at', ''))[:16]
+                    render_patient_info_card(record, card_key=f"card_{idx}")
 
             st.divider()
 
@@ -3748,12 +4304,11 @@ def main():
 
                             if not patient_results.empty:
                                 patient_results['created_at'] = pd.to_datetime(patient_results['created_at']).dt.strftime('%Y-%m-%d %H:%M')
-                                # Show effective QC status (with override indicator)
-                                patient_results['QC Display'] = patient_results.apply(
-                                    lambda r: f"PASS (Override)" if r.get('qc_override') else r['qc_status'], axis=1
-                                )
-                                display_cols = ['id', 'created_at', 'panel_type', 'QC Display', 't21_res', 't18_res', 't13_res', 'sca_res', 'final_summary']
-                                st.dataframe(patient_results[display_cols], use_container_width=True)
+
+                                # Display results as cards
+                                st.markdown(f"**{len(patient_results)} Test Result(s) Found**")
+                                for _, result_row in patient_results.iterrows():
+                                    render_test_result_card(result_row.to_dict(), card_key=f"result_card_{result_row['id']}")
 
                                 # Result selection for editing
                                 st.markdown("---")
