@@ -4001,623 +4001,758 @@ def main():
                         st.session_state.analysis_complete = False
                         st.rerun()
     
-    # TAB 2: REGISTRY
+    # TAB 2: REGISTRY - REDESIGNED FOR SCALABILITY
     with tabs[1]:
         st.header("📊 Patient Registry")
 
-        # Search and controls
-        col_search, col_refresh = st.columns([4, 1])
-        with col_search:
-            search_term = st.text_input("🔍 Search by Name or MRN", "", placeholder="Type to filter patients...")
-        with col_refresh:
-            st.write("")
-            if st.button("🔄 Refresh", help="Refresh to see latest patient data"):
-                st.rerun()
+        # Initialize session states for registry
+        if 'registry_view' not in st.session_state:
+            st.session_state.registry_view = 'browse'
+        if 'selected_patient_id' not in st.session_state:
+            st.session_state.selected_patient_id = None
+        if 'selected_result_id' not in st.session_state:
+            st.session_state.selected_result_id = None
+        if 'registry_page' not in st.session_state:
+            st.session_state.registry_page = 1
 
-        # Fetch data once
-        with get_db_connection() as conn:
-            query = """
-                SELECT r.id, r.created_at, p.full_name, p.mrn_id, p.age, p.weeks,
-                       r.panel_type, r.qc_status, r.qc_override, r.final_summary,
-                       r.full_z_json, r.t21_res, r.t18_res, r.t13_res, r.sca_res
-                FROM results r
-                JOIN patients p ON p.id = r.patient_id
-                WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
-                ORDER BY r.id DESC
-            """
-            all_records = pd.read_sql(query, conn)
+        # Sub-navigation tabs for organization
+        registry_tabs = st.tabs(["📋 Browse & Search", "👤 Patient Details", "📥 Export & Tools"])
 
-        if not all_records.empty:
-            # Apply search filter
-            if search_term:
-                filtered_df = all_records[
-                    all_records['full_name'].str.contains(search_term, case=False, na=False) |
-                    all_records['mrn_id'].str.contains(search_term, case=False, na=False)
-                ]
-            else:
-                filtered_df = all_records
+        # ==================== TAB 1: BROWSE & SEARCH ====================
+        with registry_tabs[0]:
+            # Compact header with stats
+            with get_db_connection() as conn:
+                stats_query = """
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN final_summary LIKE '%POSITIVE%' THEN 1 ELSE 0 END) as positive,
+                        SUM(CASE WHEN qc_status = 'FAIL' AND (qc_override != 1 OR qc_override IS NULL) THEN 1 ELSE 0 END) as qc_fail,
+                        SUM(CASE WHEN final_summary LIKE '%NEGATIVE%' THEN 1 ELSE 0 END) as negative
+                    FROM results r
+                    JOIN patients p ON p.id = r.patient_id
+                    WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
+                """
+                stats = pd.read_sql(stats_query, conn).iloc[0]
 
-            # Summary stats
-            total_records = len(filtered_df)
-            positive_count = len(filtered_df[filtered_df['final_summary'].str.contains('POSITIVE', case=False, na=False)])
-            qc_fail_count = len(filtered_df[(filtered_df['qc_status'] == 'FAIL') & (filtered_df['qc_override'] != 1)])
-
-            stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
-            with stat_col1:
-                st.metric("📋 Total", total_records)
-            with stat_col2:
-                st.metric("🔴 Positive", positive_count)
-            with stat_col3:
-                st.metric("⚠️ QC Fail", qc_fail_count)
-            with stat_col4:
-                st.metric("🟢 Negative", total_records - positive_count - qc_fail_count)
+            # Compact metrics row
+            m1, m2, m3, m4, m5 = st.columns([1, 1, 1, 1, 2])
+            m1.metric("Total", int(stats['total']))
+            m2.metric("Positive", int(stats['positive']), delta=None, delta_color="inverse")
+            m3.metric("QC Fail", int(stats['qc_fail']), delta=None, delta_color="inverse")
+            m4.metric("Negative", int(stats['negative']))
+            with m5:
+                if st.button("🔄 Refresh Data", use_container_width=True):
+                    st.rerun()
 
             st.divider()
+
+            # Advanced Search & Filter Section
+            with st.expander("🔍 Search & Filter", expanded=True):
+                # Row 1: Search and quick filters
+                search_col, status_col, qc_col, panel_col = st.columns([2, 1, 1, 1])
+
+                with search_col:
+                    search_term = st.text_input(
+                        "Search",
+                        placeholder="Search by name, MRN, or Report ID...",
+                        label_visibility="collapsed"
+                    )
+
+                with status_col:
+                    status_filter = st.selectbox(
+                        "Result Status",
+                        ["All Results", "Positive Only", "Negative Only", "High Risk", "Invalid/QC Fail"],
+                        label_visibility="collapsed"
+                    )
+
+                with qc_col:
+                    qc_filter = st.selectbox(
+                        "QC Status",
+                        ["All QC", "QC Pass", "QC Fail", "QC Warning", "QC Overridden"],
+                        label_visibility="collapsed"
+                    )
+
+                with panel_col:
+                    panel_options = ["All Panels"] + list(config.get('PANEL_READ_LIMITS', {}).keys())
+                    panel_filter = st.selectbox(
+                        "Panel Type",
+                        panel_options,
+                        label_visibility="collapsed"
+                    )
+
+                # Row 2: Date range and pagination settings
+                date_col1, date_col2, items_col, sort_col = st.columns([1.5, 1.5, 1, 1])
+
+                with date_col1:
+                    date_from = st.date_input("From Date", value=None, help="Filter from this date")
+
+                with date_col2:
+                    date_to = st.date_input("To Date", value=None, help="Filter up to this date")
+
+                with items_col:
+                    items_per_page = st.selectbox("Per Page", [10, 25, 50, 100], index=1)
+
+                with sort_col:
+                    sort_order = st.selectbox("Sort By", ["Newest First", "Oldest First", "Name A-Z", "Name Z-A"])
+
+            # Build and execute filtered query
+            with get_db_connection() as conn:
+                base_query = """
+                    SELECT r.id, r.created_at, p.id as patient_id, p.full_name, p.mrn_id,
+                           p.age, p.weeks, r.panel_type, r.qc_status, r.qc_override,
+                           r.final_summary, r.t21_res, r.t18_res, r.t13_res, r.sca_res
+                    FROM results r
+                    JOIN patients p ON p.id = r.patient_id
+                    WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
+                """
+                params = []
+
+                # Apply filters
+                if search_term:
+                    base_query += " AND (p.full_name LIKE ? OR p.mrn_id LIKE ? OR CAST(r.id AS TEXT) LIKE ?)"
+                    search_pattern = f"%{search_term}%"
+                    params.extend([search_pattern, search_pattern, search_pattern])
+
+                if status_filter == "Positive Only":
+                    base_query += " AND r.final_summary LIKE '%POSITIVE%'"
+                elif status_filter == "Negative Only":
+                    base_query += " AND r.final_summary LIKE '%NEGATIVE%'"
+                elif status_filter == "High Risk":
+                    base_query += " AND r.final_summary LIKE '%HIGH RISK%'"
+                elif status_filter == "Invalid/QC Fail":
+                    base_query += " AND r.final_summary LIKE '%INVALID%'"
+
+                if qc_filter == "QC Pass":
+                    base_query += " AND (r.qc_status = 'PASS' OR r.qc_override = 1)"
+                elif qc_filter == "QC Fail":
+                    base_query += " AND r.qc_status = 'FAIL' AND (r.qc_override != 1 OR r.qc_override IS NULL)"
+                elif qc_filter == "QC Warning":
+                    base_query += " AND r.qc_status = 'WARNING'"
+                elif qc_filter == "QC Overridden":
+                    base_query += " AND r.qc_override = 1"
+
+                if panel_filter != "All Panels":
+                    base_query += " AND r.panel_type = ?"
+                    params.append(panel_filter)
+
+                if date_from:
+                    base_query += " AND DATE(r.created_at) >= ?"
+                    params.append(str(date_from))
+
+                if date_to:
+                    base_query += " AND DATE(r.created_at) <= ?"
+                    params.append(str(date_to))
+
+                # Apply sorting
+                if sort_order == "Newest First":
+                    base_query += " ORDER BY r.id DESC"
+                elif sort_order == "Oldest First":
+                    base_query += " ORDER BY r.id ASC"
+                elif sort_order == "Name A-Z":
+                    base_query += " ORDER BY p.full_name ASC, r.id DESC"
+                elif sort_order == "Name Z-A":
+                    base_query += " ORDER BY p.full_name DESC, r.id DESC"
+
+                all_records = pd.read_sql(base_query, conn, params=params if params else None)
+
+            total_records = len(all_records)
 
             if total_records > 0:
-                # Pagination
-                items_per_page = 10
+                # Pagination controls
                 total_pages = max(1, (total_records + items_per_page - 1) // items_per_page)
 
-                page_col1, page_col2, page_col3 = st.columns([2, 1, 2])
-                with page_col2:
-                    current_page = st.number_input("Page", min_value=1, max_value=total_pages, value=1, key="registry_page")
+                pg1, pg2, pg3, pg4, pg5 = st.columns([1, 1, 2, 1, 1])
 
+                with pg1:
+                    if st.button("⏮ First", disabled=st.session_state.registry_page <= 1):
+                        st.session_state.registry_page = 1
+                        st.rerun()
+
+                with pg2:
+                    if st.button("◀ Prev", disabled=st.session_state.registry_page <= 1):
+                        st.session_state.registry_page = max(1, st.session_state.registry_page - 1)
+                        st.rerun()
+
+                with pg3:
+                    current_page = st.number_input(
+                        "Page", min_value=1, max_value=total_pages,
+                        value=min(st.session_state.registry_page, total_pages),
+                        key="page_input", label_visibility="collapsed"
+                    )
+                    if current_page != st.session_state.registry_page:
+                        st.session_state.registry_page = current_page
+                        st.rerun()
+                    st.caption(f"Page {current_page} of {total_pages} ({total_records} records)")
+
+                with pg4:
+                    if st.button("Next ▶", disabled=st.session_state.registry_page >= total_pages):
+                        st.session_state.registry_page = min(total_pages, st.session_state.registry_page + 1)
+                        st.rerun()
+
+                with pg5:
+                    if st.button("Last ⏭", disabled=st.session_state.registry_page >= total_pages):
+                        st.session_state.registry_page = total_pages
+                        st.rerun()
+
+                # Calculate page slice
+                current_page = st.session_state.registry_page
                 start_idx = (current_page - 1) * items_per_page
                 end_idx = min(start_idx + items_per_page, total_records)
+                page_records = all_records.iloc[start_idx:end_idx]
 
-                st.caption(f"Showing {start_idx + 1}-{end_idx} of {total_records} records" +
-                          (f" (filtered from {len(all_records)})" if search_term else ""))
+                # Display as compact interactive table
+                st.markdown(f"**Showing {start_idx + 1}-{end_idx} of {total_records} records**")
 
-                # Display patient cards
-                for i in range(start_idx, end_idx):
-                    record = filtered_df.iloc[i].to_dict()
-                    created_at = record.get('created_at', '')
-                    record['created_at'] = str(created_at)[:16] if created_at else 'N/A'
-                    render_patient_info_card(record, card_key=f"reg_card_{i}")
+                # Create styled dataframe for display
+                display_data = []
+                for _, row in page_records.iterrows():
+                    summary = str(row['final_summary']).upper()
+                    qc = str(row['qc_status']).upper()
+                    override = bool(row.get('qc_override'))
+
+                    if 'POSITIVE' in summary:
+                        status_icon = "🔴"
+                    elif 'FAIL' in qc and not override:
+                        status_icon = "⚠️"
+                    elif 'WARNING' in qc or 'HIGH RISK' in summary:
+                        status_icon = "🟠"
+                    else:
+                        status_icon = "🟢"
+
+                    effective_qc = "PASS*" if override else row['qc_status']
+
+                    display_data.append({
+                        'Status': status_icon,
+                        'ID': row['id'],
+                        'Patient': row['full_name'],
+                        'MRN': row['mrn_id'],
+                        'Panel': row['panel_type'],
+                        'T21': row['t21_res'] or '-',
+                        'T18': row['t18_res'] or '-',
+                        'T13': row['t13_res'] or '-',
+                        'SCA': (row['sca_res'] or '-')[:15],
+                        'QC': effective_qc,
+                        'Result': row['final_summary'],
+                        'Date': str(row['created_at'])[:10] if row['created_at'] else '-',
+                        'patient_id': row['patient_id']
+                    })
+
+                display_df = pd.DataFrame(display_data)
+
+                # Display table
+                st.dataframe(
+                    display_df[['Status', 'ID', 'Patient', 'MRN', 'Panel', 'T21', 'T18', 'T13', 'QC', 'Result', 'Date']],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Status": st.column_config.TextColumn("", width="small"),
+                        "ID": st.column_config.NumberColumn("ID", width="small"),
+                        "Patient": st.column_config.TextColumn("Patient", width="medium"),
+                        "MRN": st.column_config.TextColumn("MRN", width="small"),
+                        "Panel": st.column_config.TextColumn("Panel", width="small"),
+                        "T21": st.column_config.TextColumn("T21", width="small"),
+                        "T18": st.column_config.TextColumn("T18", width="small"),
+                        "T13": st.column_config.TextColumn("T13", width="small"),
+                        "QC": st.column_config.TextColumn("QC", width="small"),
+                        "Result": st.column_config.TextColumn("Result", width="medium"),
+                        "Date": st.column_config.TextColumn("Date", width="small"),
+                    }
+                )
+
+                # Quick action row
+                st.markdown("**Quick Actions:**")
+                action_cols = st.columns([2, 2, 2, 2, 2])
+
+                with action_cols[0]:
+                    view_id = st.number_input("Report ID", min_value=1, value=1, key="quick_view_id", label_visibility="collapsed")
+
+                with action_cols[1]:
+                    if st.button("👁 View Patient", use_container_width=True):
+                        with get_db_connection() as conn:
+                            patient_query = "SELECT patient_id FROM results WHERE id = ?"
+                            result = pd.read_sql(patient_query, conn, params=(view_id,))
+                            if not result.empty:
+                                st.session_state.selected_patient_id = result.iloc[0]['patient_id']
+                                st.session_state.selected_result_id = view_id
+                                st.rerun()
+                            else:
+                                st.error(f"Report ID {view_id} not found")
+
+                with action_cols[2]:
+                    if st.button("📄 Generate PDF", use_container_width=True):
+                        pdf_data = generate_pdf_report(view_id, lang=config.get('REPORT_LANGUAGE', 'en'))
+                        if pdf_data:
+                            st.download_button("⬇️ Download", pdf_data, f"Report_{view_id}.pdf", "application/pdf", key="quick_pdf_download")
+                        else:
+                            st.error("Report not found")
+
+                with action_cols[3]:
+                    if st.button("🗑️ Delete Record", use_container_width=True):
+                        st.session_state.show_delete_confirm = view_id
+
+                with action_cols[4]:
+                    if st.button("✏️ Edit Result", use_container_width=True):
+                        with get_db_connection() as conn:
+                            patient_query = "SELECT patient_id FROM results WHERE id = ?"
+                            result = pd.read_sql(patient_query, conn, params=(view_id,))
+                            if not result.empty:
+                                st.session_state.selected_patient_id = result.iloc[0]['patient_id']
+                                st.session_state.selected_result_id = view_id
+                                st.rerun()
+
+                # Delete confirmation dialog
+                if st.session_state.get('show_delete_confirm'):
+                    del_id = st.session_state.show_delete_confirm
+                    st.warning(f"Are you sure you want to delete Report ID {del_id}?")
+                    col_yes, col_no = st.columns(2)
+                    with col_yes:
+                        if st.button("Yes, Delete", type="primary"):
+                            ok, msg = delete_record(del_id)
+                            st.session_state.show_delete_confirm = None
+                            if ok:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                    with col_no:
+                        if st.button("Cancel"):
+                            st.session_state.show_delete_confirm = None
+                            st.rerun()
+
             else:
-                if search_term:
-                    st.warning(f"No records found matching '{search_term}'")
+                st.info("No records found matching your filters. Try adjusting the search criteria.")
+
+        # ==================== TAB 2: PATIENT DETAILS ====================
+        with registry_tabs[1]:
+            st.markdown("### Find Patient")
+
+            patient_search_col, patient_btn_col = st.columns([3, 1])
+            with patient_search_col:
+                patient_search = st.text_input("Search Patient", placeholder="Enter patient name or MRN...", key="patient_detail_search", label_visibility="collapsed")
+            with patient_btn_col:
+                search_clicked = st.button("🔍 Search", use_container_width=True)
+
+            # Get patients list
+            with get_db_connection() as conn:
+                if patient_search:
+                    patients_query = """
+                        SELECT p.id, p.mrn_id, p.full_name, p.age, p.weeks,
+                               COUNT(r.id) as result_count, MAX(r.created_at) as last_test
+                        FROM patients p
+                        LEFT JOIN results r ON r.patient_id = p.id
+                        WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
+                          AND (p.full_name LIKE ? OR p.mrn_id LIKE ?)
+                        GROUP BY p.id ORDER BY last_test DESC LIMIT 20
+                    """
+                    search_pattern = f"%{patient_search}%"
+                    patients_df = pd.read_sql(patients_query, conn, params=(search_pattern, search_pattern))
                 else:
-                    st.info("No records in the registry")
+                    patients_df = pd.DataFrame()
 
-            st.divider()
+            # Show search results or selected patient
+            if not patients_df.empty and not st.session_state.get('selected_patient_id'):
+                st.markdown(f"**Found {len(patients_df)} patient(s)**")
 
-            col_exp, col_json, col_del, col_pdf = st.columns(4)
+                for _, p_row in patients_df.iterrows():
+                    with st.container():
+                        cols = st.columns([3, 1, 1, 1])
+                        with cols[0]:
+                            st.markdown(f"**{p_row['full_name']}** (MRN: {p_row['mrn_id']})")
+                        with cols[1]:
+                            st.caption(f"Age: {p_row['age'] or 'N/A'}")
+                        with cols[2]:
+                            st.caption(f"Tests: {p_row['result_count']}")
+                        with cols[3]:
+                            if st.button("Select", key=f"sel_patient_{p_row['id']}"):
+                                st.session_state.selected_patient_id = p_row['id']
+                                st.rerun()
+                        st.divider()
 
-            with col_exp:
-                with get_db_connection() as exp_conn:
+            elif not patient_search and not st.session_state.get('selected_patient_id'):
+                st.info("Enter a patient name or MRN above to search, or select a patient from the Browse tab.")
+
+            # Show selected patient details
+            if st.session_state.get('selected_patient_id'):
+                patient_id = st.session_state.selected_patient_id
+                patient_details = get_patient_details(patient_id)
+
+                if patient_details:
+                    header_cols = st.columns([3, 1])
+                    with header_cols[0]:
+                        st.markdown(f"## 👤 {patient_details.get('name', 'Unknown')}")
+                        st.caption(f"MRN: {patient_details['mrn']} | Created: {str(patient_details.get('created_at', 'N/A'))[:10]}")
+                    with header_cols[1]:
+                        if st.button("✖ Close Patient", use_container_width=True):
+                            st.session_state.selected_patient_id = None
+                            st.session_state.selected_result_id = None
+                            st.rerun()
+
+                    st.divider()
+
+                    # Patient info and actions in tabs
+                    detail_tabs = st.tabs(["📋 Information", "📊 Test Results", "🔧 QC Override", "⚠️ Delete"])
+
+                    # --- Patient Information Tab ---
+                    with detail_tabs[0]:
+                        with st.form(key="edit_patient_form"):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                edit_name = st.text_input("Full Name", value=patient_details.get('name', ''))
+                                edit_age = st.number_input("Age", min_value=15, max_value=60, value=int(patient_details.get('age', 30)) if patient_details.get('age') else 30)
+                                edit_weight = st.number_input("Weight (kg)", min_value=30.0, max_value=200.0, value=float(patient_details.get('weight', 65.0)) if patient_details.get('weight') else 65.0)
+                            with col2:
+                                edit_weeks = st.number_input("Gestational Weeks", min_value=9, max_value=42, value=int(patient_details.get('weeks', 12)) if patient_details.get('weeks') else 12)
+                                edit_height = st.number_input("Height (cm)", min_value=100, max_value=220, value=int(patient_details.get('height', 165)) if patient_details.get('height') else 165)
+                                if edit_weight > 0 and edit_height > 0:
+                                    edit_bmi = round(edit_weight / ((edit_height/100)**2), 1)
+                                    st.metric("BMI (calculated)", edit_bmi)
+                                else:
+                                    edit_bmi = 0.0
+
+                            edit_notes = st.text_area("Clinical Notes", value=patient_details.get('notes', '') or '', height=100)
+
+                            if st.form_submit_button("💾 Update Patient", type="primary"):
+                                update_data = {'name': edit_name, 'age': edit_age, 'weight': edit_weight, 'height': edit_height, 'bmi': edit_bmi, 'weeks': edit_weeks, 'notes': edit_notes}
+                                success, message = update_patient(patient_id, update_data)
+                                if success:
+                                    st.success(f"✅ {message}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {message}")
+
+                    # --- Test Results Tab ---
+                    with detail_tabs[1]:
+                        with get_db_connection() as conn:
+                            results_query = """
+                                SELECT r.id, r.created_at, r.panel_type, r.qc_status,
+                                       r.t21_res, r.t18_res, r.t13_res, r.sca_res, r.final_summary,
+                                       r.qc_override, r.qc_override_reason
+                                FROM results r WHERE r.patient_id = ? ORDER BY r.created_at DESC
+                            """
+                            patient_results = pd.read_sql(results_query, conn, params=(patient_id,))
+
+                        if not patient_results.empty:
+                            st.markdown(f"**{len(patient_results)} Test Result(s)**")
+
+                            for _, r_row in patient_results.iterrows():
+                                result_dict = r_row.to_dict()
+                                result_dict['created_at'] = str(result_dict['created_at'])[:16] if result_dict['created_at'] else 'N/A'
+
+                                with st.container():
+                                    render_test_result_card(result_dict, card_key=f"res_{r_row['id']}")
+                                    if st.button(f"✏️ Edit Result #{r_row['id']}", key=f"edit_res_{r_row['id']}"):
+                                        st.session_state.selected_result_id = r_row['id']
+                                        st.rerun()
+
+                            # Edit form for selected result
+                            if st.session_state.get('selected_result_id'):
+                                st.divider()
+                                result_id = st.session_state.selected_result_id
+
+                                col_title, col_cancel = st.columns([3, 1])
+                                with col_title:
+                                    st.subheader(f"✏️ Editing Result #{result_id}")
+                                with col_cancel:
+                                    if st.button("Cancel Edit"):
+                                        st.session_state.selected_result_id = None
+                                        st.rerun()
+
+                                result_details = get_result_details(result_id)
+
+                                if result_details:
+                                    qc_m = result_details.get('qc_metrics', {})
+                                    full_z = result_details.get('full_z', {})
+
+                                    with st.form(key=f"edit_result_form_{result_id}"):
+                                        st.markdown("**Panel & Sequencing Metrics**")
+                                        c1, c2, c3 = st.columns(3)
+                                        edit_panel = c1.selectbox("Panel Type", options=list(config['PANEL_READ_LIMITS'].keys()),
+                                            index=list(config['PANEL_READ_LIMITS'].keys()).index(result_details['panel_type']) if result_details['panel_type'] in config['PANEL_READ_LIMITS'] else 0)
+                                        edit_reads = c2.number_input("Reads (M)", min_value=0.0, max_value=100.0, value=float(qc_m.get('reads', 8.0)))
+                                        edit_cff = c3.number_input("Cff %", min_value=0.0, max_value=50.0, value=float(qc_m.get('cff', 10.0)))
+
+                                        c4, c5, c6, c7 = st.columns(4)
+                                        edit_gc = c4.number_input("GC %", min_value=0.0, max_value=100.0, value=float(qc_m.get('gc', 40.0)))
+                                        edit_qs = c5.number_input("QS", min_value=0.0, max_value=10.0, value=float(qc_m.get('qs', 1.0)))
+                                        edit_uniq = c6.number_input("Unique %", min_value=0.0, max_value=100.0, value=float(qc_m.get('unique_rate', 75.0)))
+                                        edit_err = c7.number_input("Error %", min_value=0.0, max_value=5.0, value=float(qc_m.get('error_rate', 0.1)))
+
+                                        st.markdown("**Z-Scores**")
+                                        z1, z2, z3 = st.columns(3)
+                                        edit_z21 = z1.number_input("Z-21", min_value=-10.0, max_value=50.0, value=float(full_z.get('21', full_z.get(21, 0.5))))
+                                        edit_z18 = z2.number_input("Z-18", min_value=-10.0, max_value=50.0, value=float(full_z.get('18', full_z.get(18, 0.5))))
+                                        edit_z13 = z3.number_input("Z-13", min_value=-10.0, max_value=50.0, value=float(full_z.get('13', full_z.get(13, 0.5))))
+
+                                        st.markdown("**Sex Chromosome Analysis**")
+                                        s1, s2, s3 = st.columns(3)
+                                        current_sca = result_details.get('sca_res', '')
+                                        sca_types = ["XX", "XY", "XO", "XXX", "XXY", "XYY", "XXX+XY", "XO+XY"]
+                                        detected_sca = "XX"
+                                        if "XXX+XY" in current_sca.upper(): detected_sca = "XXX+XY"
+                                        elif "XO+XY" in current_sca.upper(): detected_sca = "XO+XY"
+                                        else:
+                                            for st_type in sca_types[:6]:
+                                                if st_type in current_sca.upper():
+                                                    detected_sca = st_type
+                                                    break
+                                        edit_sca_type = s1.selectbox("SCA Type", options=sca_types, index=sca_types.index(detected_sca) if detected_sca in sca_types else 0)
+                                        edit_zxx = s2.number_input("Z-XX", min_value=-10.0, max_value=50.0, value=float(full_z.get('XX', 0.0)))
+                                        edit_zxy = s3.number_input("Z-XY", min_value=-10.0, max_value=50.0, value=float(full_z.get('XY', 0.0)))
+
+                                        st.markdown("**Findings (CNV & RAT)**")
+                                        cnv_list = result_details.get('cnv_list', [])
+                                        cnv_text = "; ".join(cnv_list) if cnv_list and isinstance(cnv_list, list) and len(cnv_list) > 0 and isinstance(cnv_list[0], str) else ""
+                                        edit_cnv = st.text_area("CNV Findings", value=cnv_text, height=60, help="Format: 5Mb (8%); 10Mb (12%)")
+
+                                        rat_list = result_details.get('rat_list', [])
+                                        rat_text = "; ".join(rat_list) if rat_list and isinstance(rat_list, list) and len(rat_list) > 0 and isinstance(rat_list[0], str) else ""
+                                        edit_rat = st.text_area("RAT Findings", value=rat_text, height=60, help="Format: Chr 7 (Z:4.5); Chr 16 (Z:5.2)")
+
+                                        recalc_results = st.checkbox("Recalculate results from Z-scores", value=True)
+
+                                        if st.form_submit_button("💾 Update Result", type="primary"):
+                                            new_qc_metrics = {'reads': edit_reads, 'cff': edit_cff, 'gc': edit_gc, 'qs': edit_qs, 'unique_rate': edit_uniq, 'error_rate': edit_err}
+                                            new_full_z = {'21': edit_z21, '18': edit_z18, '13': edit_z13, 'XX': edit_zxx, 'XY': edit_zxy}
+                                            for k, v in full_z.items():
+                                                if str(k) not in ['21', '18', '13', 'XX', 'XY']:
+                                                    new_full_z[str(k)] = v
+
+                                            if recalc_results:
+                                                t21_res, t21_risk = analyze_trisomy(config, edit_z21, "21")
+                                                t18_res, t18_risk = analyze_trisomy(config, edit_z18, "18")
+                                                t13_res, t13_risk = analyze_trisomy(config, edit_z13, "13")
+                                                sca_res, sca_risk = analyze_sca(config, edit_sca_type, edit_zxx, edit_zxy, edit_cff)
+
+                                                analyzed_cnvs, is_cnv_high = [], False
+                                                if edit_cnv.strip():
+                                                    for cnv_item in edit_cnv.split(';'):
+                                                        cnv_item = cnv_item.strip()
+                                                        if cnv_item:
+                                                            match = re.search(r'([\d.]+)\s*[Mm]b.*?([\d.]+)\s*%', cnv_item)
+                                                            if match:
+                                                                sz, rt = float(match.group(1)), float(match.group(2))
+                                                                msg, _, risk = analyze_cnv(sz, rt)
+                                                                if risk == "HIGH": is_cnv_high = True
+                                                                analyzed_cnvs.append(f"{sz}Mb ({rt}%) -> {msg}")
+                                                            else:
+                                                                analyzed_cnvs.append(cnv_item)
+
+                                                analyzed_rats, is_rat_high = [], False
+                                                if edit_rat.strip():
+                                                    for rat_item in edit_rat.split(';'):
+                                                        rat_item = rat_item.strip()
+                                                        if rat_item:
+                                                            match = re.search(r'[Cc]hr\s*(\d+).*?[Zz]:\s*([\d.]+)', rat_item)
+                                                            if match:
+                                                                r_chr, r_z = int(match.group(1)), float(match.group(2))
+                                                                msg, risk = analyze_rat(config, r_chr, r_z)
+                                                                if risk in ["POSITIVE", "HIGH"]: is_rat_high = True
+                                                                analyzed_rats.append(f"Chr {r_chr} (Z:{r_z}) -> {msg}")
+                                                                new_full_z[str(r_chr)] = r_z
+                                                            else:
+                                                                analyzed_rats.append(rat_item)
+
+                                                all_risks = [t21_risk, t18_risk, t13_risk, sca_risk]
+                                                is_positive = "POSITIVE" in all_risks
+                                                is_high_risk = "HIGH" in all_risks or is_cnv_high or is_rat_high
+
+                                                qc_stat, qc_msg, qc_advice = check_qc_metrics(config, edit_panel, edit_reads, edit_cff, edit_gc, edit_qs, edit_uniq, edit_err, is_positive or is_high_risk)
+
+                                                final_summary = "NEGATIVE"
+                                                if is_positive: final_summary = "POSITIVE DETECTED"
+                                                elif is_high_risk: final_summary = "HIGH RISK (SEE ADVICE)"
+                                                if qc_stat == "FAIL": final_summary = "INVALID (QC FAIL)"
+                                            else:
+                                                t21_res, t18_res, t13_res, sca_res = result_details['t21_res'], result_details['t18_res'], result_details['t13_res'], result_details['sca_res']
+                                                analyzed_cnvs = cnv_list if isinstance(cnv_list, list) else []
+                                                analyzed_rats = rat_list if isinstance(rat_list, list) else []
+                                                qc_stat, qc_msg, qc_advice = result_details['qc_status'], result_details['qc_details'], result_details['qc_advice']
+                                                final_summary = result_details['final_summary']
+
+                                            update_data = {
+                                                'panel_type': edit_panel, 'qc_status': qc_stat, 'qc_details': str(qc_msg) if recalc_results else qc_msg,
+                                                'qc_advice': qc_advice, 'qc_metrics': new_qc_metrics, 't21_res': t21_res, 't18_res': t18_res, 't13_res': t13_res,
+                                                'sca_res': sca_res, 'cnv_list': analyzed_cnvs, 'rat_list': analyzed_rats, 'full_z': new_full_z, 'final_summary': final_summary
+                                            }
+
+                                            success, message = update_result(result_id, update_data, st.session_state.user['id'])
+                                            if success:
+                                                st.success(f"✅ {message}")
+                                                st.session_state.selected_result_id = None
+                                                st.rerun()
+                                            else:
+                                                st.error(f"❌ {message}")
+                        else:
+                            st.info("No test results found for this patient.")
+
+                    # --- QC Override Tab ---
+                    with detail_tabs[2]:
+                        st.markdown("**Override QC status for validation purposes.**")
+
+                        with get_db_connection() as conn:
+                            qc_query = """
+                                SELECT r.id, r.qc_status, r.qc_override, r.qc_override_reason,
+                                       r.qc_override_at, u.full_name as override_by
+                                FROM results r
+                                LEFT JOIN users u ON r.qc_override_by = u.id
+                                WHERE r.patient_id = ? ORDER BY r.created_at DESC
+                            """
+                            qc_results = pd.read_sql(qc_query, conn, params=(patient_id,))
+
+                        if not qc_results.empty:
+                            for _, qc_row in qc_results.iterrows():
+                                result_id = qc_row['id']
+                                original_status = qc_row['qc_status']
+                                is_overridden = bool(qc_row.get('qc_override'))
+
+                                st.markdown(f"**Result #{result_id}** - QC: `{original_status}`")
+
+                                if is_overridden:
+                                    st.success(f"✅ Overridden to PASS by {qc_row.get('override_by', 'Unknown')}")
+                                    st.caption(f"Reason: {qc_row.get('qc_override_reason', 'N/A')}")
+                                    if st.button(f"Remove Override", key=f"rm_override_{result_id}"):
+                                        ok, msg = remove_qc_override(result_id, st.session_state.user['id'])
+                                        if ok:
+                                            st.success(msg)
+                                            st.rerun()
+                                        else:
+                                            st.error(msg)
+                                elif original_status in ['FAIL', 'WARNING']:
+                                    with st.form(key=f"override_form_{result_id}"):
+                                        override_reason = st.text_input("Override Reason (required)", placeholder="e.g., Clinical judgment")
+                                        if st.form_submit_button("Override to PASS"):
+                                            if override_reason.strip():
+                                                ok, msg = override_qc_status(result_id, override_reason.strip(), st.session_state.user['id'])
+                                                if ok:
+                                                    st.success(msg)
+                                                    st.rerun()
+                                                else:
+                                                    st.error(msg)
+                                            else:
+                                                st.error("Reason required")
+                                else:
+                                    st.info("QC already PASS")
+                                st.divider()
+                        else:
+                            st.info("No results found.")
+
+                    # --- Delete Tab ---
+                    with detail_tabs[3]:
+                        st.warning("**Danger Zone:** Permanently delete this patient and all test results.")
+
+                        with get_db_connection() as conn:
+                            result_count = pd.read_sql("SELECT COUNT(*) FROM results WHERE patient_id = ?", conn, params=(patient_id,)).iloc[0, 0]
+
+                        st.error(f"This will delete **{result_count}** test result(s). This action cannot be undone.")
+
+                        confirm_delete = st.checkbox(f"I confirm deletion of patient '{patient_details['mrn']}'")
+
+                        if st.button("🗑️ Delete Permanently", type="primary", disabled=not confirm_delete):
+                            ok, msg = delete_patient(patient_id, hard_delete=True)
+                            if ok:
+                                st.success(msg)
+                                st.session_state.selected_patient_id = None
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                else:
+                    st.error("Patient not found.")
+                    if st.button("Clear Selection"):
+                        st.session_state.selected_patient_id = None
+                        st.rerun()
+
+        # ==================== TAB 3: EXPORT & TOOLS ====================
+        with registry_tabs[2]:
+            st.markdown("### Data Export")
+
+            exp_col1, exp_col2 = st.columns(2)
+
+            with exp_col1:
+                st.markdown("**📥 Export Full Registry (CSV)**")
+                with get_db_connection() as conn:
                     full_dump = pd.read_sql("""
                         SELECT * FROM results r
                         JOIN patients p ON p.id = r.patient_id
                         WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
-                    """, exp_conn)
-                st.download_button("📥 Export CSV", full_dump.to_csv(index=False),
-                                 "nipt_registry.csv", "text/csv")
+                    """, conn)
 
-            with col_json:
-                # Generate comprehensive JSON export
-                with get_db_connection() as json_conn:
-                    json_query = """
+                st.download_button("📥 Download CSV", full_dump.to_csv(index=False), "nipt_registry.csv", "text/csv", use_container_width=True)
+                st.caption(f"{len(full_dump)} records")
+
+            with exp_col2:
+                st.markdown("**📤 Export as JSON**")
+                with get_db_connection() as conn:
+                    json_df = pd.read_sql("""
                         SELECT r.id as report_id, r.created_at as report_date,
                                p.full_name, p.mrn_id, p.age, p.weight_kg, p.height_cm, p.bmi, p.weeks,
-                               p.clinical_notes, r.panel_type, r.qc_status, r.qc_details, r.qc_advice,
-                               r.t21_res, r.t18_res, r.t13_res, r.sca_res,
-                               r.cnv_json, r.rat_json, r.full_z_json, r.final_summary
+                               p.clinical_notes, r.panel_type, r.qc_status,
+                               r.t21_res, r.t18_res, r.t13_res, r.sca_res, r.final_summary
                         FROM results r
                         JOIN patients p ON p.id = r.patient_id
                         ORDER BY r.id DESC
-                    """
-                    json_df = pd.read_sql(json_query, json_conn)
+                    """, conn)
 
-                    # Convert to structured JSON
-                    json_records = []
-                    for _, row in json_df.iterrows():
-                        record = {
-                            'report_id': int(row['report_id']) if pd.notna(row['report_id']) else None,
-                            'report_date': str(row['report_date']) if pd.notna(row['report_date']) else None,
-                            'patient': {
-                                'name': str(row['full_name']) if pd.notna(row['full_name']) else None,
-                                'mrn': str(row['mrn_id']) if pd.notna(row['mrn_id']) else None,
-                                'age': int(row['age']) if pd.notna(row['age']) else None,
-                                'weight_kg': float(row['weight_kg']) if pd.notna(row['weight_kg']) else None,
-                                'height_cm': int(row['height_cm']) if pd.notna(row['height_cm']) else None,
-                                'bmi': float(row['bmi']) if pd.notna(row['bmi']) else None,
-                                'gestational_weeks': int(row['weeks']) if pd.notna(row['weeks']) else None,
-                                'clinical_notes': str(row['clinical_notes']) if pd.notna(row['clinical_notes']) else None,
-                            },
-                            'test_info': {
-                                'panel_type': str(row['panel_type']) if pd.notna(row['panel_type']) else None,
-                                'qc_status': str(row['qc_status']) if pd.notna(row['qc_status']) else None,
-                                'qc_details': str(row['qc_details']) if pd.notna(row['qc_details']) else None,
-                                'qc_advice': str(row['qc_advice']) if pd.notna(row['qc_advice']) else None,
-                            },
-                            'results': {
-                                'trisomy_21': str(row['t21_res']) if pd.notna(row['t21_res']) else None,
-                                'trisomy_18': str(row['t18_res']) if pd.notna(row['t18_res']) else None,
-                                'trisomy_13': str(row['t13_res']) if pd.notna(row['t13_res']) else None,
-                                'sca': str(row['sca_res']) if pd.notna(row['sca_res']) else None,
-                                'cnv_findings': json.loads(row['cnv_json']) if pd.notna(row['cnv_json']) else [],
-                                'rat_findings': json.loads(row['rat_json']) if pd.notna(row['rat_json']) else [],
-                                'z_scores': json.loads(row['full_z_json']) if pd.notna(row['full_z_json']) else {},
-                                'final_summary': str(row['final_summary']) if pd.notna(row['final_summary']) else None,
-                            }
+                json_records = []
+                for _, row in json_df.iterrows():
+                    record = {
+                        'report_id': int(row['report_id']) if pd.notna(row['report_id']) else None,
+                        'report_date': str(row['report_date']) if pd.notna(row['report_date']) else None,
+                        'patient': {
+                            'name': str(row['full_name']) if pd.notna(row['full_name']) else None,
+                            'mrn': str(row['mrn_id']) if pd.notna(row['mrn_id']) else None,
+                            'age': int(row['age']) if pd.notna(row['age']) else None,
+                        },
+                        'results': {
+                            'trisomy_21': str(row['t21_res']) if pd.notna(row['t21_res']) else None,
+                            'trisomy_18': str(row['t18_res']) if pd.notna(row['t18_res']) else None,
+                            'trisomy_13': str(row['t13_res']) if pd.notna(row['t13_res']) else None,
+                            'sca': str(row['sca_res']) if pd.notna(row['sca_res']) else None,
+                            'final_summary': str(row['final_summary']) if pd.notna(row['final_summary']) else None,
                         }
-                        json_records.append(record)
-
-                    json_export = {
-                        'export_date': datetime.now().isoformat(),
-                        'total_records': len(json_records),
-                        'exported_by': st.session_state.user['username'],
-                        'records': json_records
                     }
+                    json_records.append(record)
 
-                st.download_button("📤 Export JSON", json.dumps(json_export, indent=2),
-                                 "nipt_registry.json", "application/json")
-            
-            with col_del:
-                with st.expander("🗑️ Delete Record"):
-                    del_id = st.number_input("Report ID", 1, key="del_input")
-                    if st.button("Confirm Delete", type="secondary"):
-                        ok, msg = delete_record(del_id)
-                        if ok: 
-                            st.success(msg)
-                            st.rerun()
-                        else: 
-                            st.error(msg)
-            
-            with col_pdf:
-                with st.expander("📄 Generate PDF"):
-                    pdf_id = st.number_input("Report ID", 1, key="pdf_input")
-                    pdf_lang = st.selectbox(
-                        "Report Language",
-                        options=["English", "Francais"],
-                        index=0 if config.get('REPORT_LANGUAGE', 'en') == 'en' else 1,
-                        key="pdf_lang_registry",
-                        help="Select the language for the PDF report"
-                    )
-                    lang_code = 'en' if pdf_lang == "English" else 'fr'
-                    if st.button("Generate"):
-                        pdf_data = generate_pdf_report(pdf_id, lang=lang_code)
-                        if pdf_data:
-                            lang_suffix = "_FR" if lang_code == 'fr' else "_EN"
-                            st.download_button("Download PDF", pdf_data,
-                                             f"Report_{pdf_id}{lang_suffix}.pdf", "application/pdf")
-                        else:
-                            st.error("Report not found")
+                json_export = {
+                    'export_date': datetime.now().isoformat(),
+                    'total_records': len(json_records),
+                    'exported_by': st.session_state.user['username'],
+                    'records': json_records
+                }
 
-            # ===== PATIENT VIEW/EDIT SECTION =====
+                st.download_button("📤 Download JSON", json.dumps(json_export, indent=2), "nipt_registry.json", "application/json", use_container_width=True)
+                st.caption(f"{len(json_records)} records")
+
             st.divider()
-            st.subheader("👤 Patient Details & Edit")
 
-            # Search for patient
-            patient_search = st.text_input("🔍 Search patient by Name or MRN", "", key="patient_edit_search",
-                                          placeholder="Type to search for a patient...")
+            st.markdown("### Tools")
 
-            # Get list of unique patients (excluding deleted)
-            with get_db_connection() as patient_conn:
-                patients_query = """
-                    SELECT DISTINCT p.id, p.mrn_id, p.full_name, COUNT(r.id) as result_count
-                    FROM patients p
-                    LEFT JOIN results r ON r.patient_id = p.id
-                    WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
-                    GROUP BY p.id
-                    ORDER BY p.full_name
-                """
-                patients_df = pd.read_sql(patients_query, patient_conn)
+            tool_col1, tool_col2 = st.columns(2)
 
-            if not patients_df.empty:
-                # Filter patients based on search
-                if patient_search:
-                    filtered_patients = patients_df[
-                        patients_df['full_name'].str.contains(patient_search, case=False, na=False) |
-                        patients_df['mrn_id'].str.contains(patient_search, case=False, na=False)
-                    ]
-                else:
-                    filtered_patients = patients_df
+            with tool_col1:
+                st.markdown("**📄 Generate PDF Report**")
+                pdf_id = st.number_input("Report ID", min_value=1, value=1, key="tool_pdf_id")
+                pdf_lang = st.selectbox("Language", ["English", "Francais"], key="tool_pdf_lang")
+                lang_code = 'en' if pdf_lang == "English" else 'fr'
 
-                if len(filtered_patients) == 0:
-                    st.warning(f"No patients found matching '{patient_search}'")
-                elif len(filtered_patients) > 10 and not patient_search:
-                    st.info(f"📋 {len(patients_df)} patients in database. Use the search box above to find a specific patient.")
-                else:
-                    # Show matching patients as clickable cards
-                    st.caption(f"Found {len(filtered_patients)} patient(s)" + (f" matching '{patient_search}'" if patient_search else ""))
+                if st.button("Generate PDF", use_container_width=True):
+                    pdf_data = generate_pdf_report(pdf_id, lang=lang_code)
+                    if pdf_data:
+                        st.download_button("⬇️ Download PDF", pdf_data, f"Report_{pdf_id}_{lang_code.upper()}.pdf", "application/pdf", key="tool_pdf_download")
+                    else:
+                        st.error("Report not found")
 
-                    # Use session state to track selected patient
-                    if 'selected_patient_id' not in st.session_state:
-                        st.session_state.selected_patient_id = None
+            with tool_col2:
+                st.markdown("**🗑️ Delete Record**")
+                del_id = st.number_input("Report ID to Delete", min_value=1, value=1, key="tool_del_id")
+                confirm_del = st.checkbox("Confirm deletion", key="tool_del_confirm")
 
-                    # Display patient selection buttons
-                    for _, patient_row in filtered_patients.iterrows():
-                        col_info, col_btn = st.columns([4, 1])
-                        with col_info:
-                            st.markdown(f"**{patient_row['full_name']}** (MRN: {patient_row['mrn_id']}) - {patient_row['result_count']} result(s)")
-                        with col_btn:
-                            if st.button("View/Edit", key=f"select_patient_{patient_row['id']}"):
-                                st.session_state.selected_patient_id = patient_row['id']
-                                st.rerun()
-
-                # Show selected patient details
-                if st.session_state.get('selected_patient_id'):
-                    patient_id = st.session_state.selected_patient_id
-                    patient_details = get_patient_details(patient_id)
-
-                    if patient_details:
-                        st.divider()
-
-                        # Header with close button
-                        col_title, col_close = st.columns([4, 1])
-                        with col_title:
-                            st.markdown(f"### 👤 {patient_details.get('name', 'Unknown')}")
-                        with col_close:
-                            if st.button("✖ Close", key="close_patient_details"):
-                                st.session_state.selected_patient_id = None
-                                st.session_state.selected_result_id = None
-                                st.rerun()
-
-                        with st.expander("📋 View & Edit Patient Information", expanded=True):
-                            st.info(f"Patient ID: {patient_details['mrn']} | Created: {patient_details.get('created_at', 'N/A')[:10] if patient_details.get('created_at') else 'N/A'}")
-
-                            with st.form(key="edit_patient_form"):
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    edit_name = st.text_input("Full Name", value=patient_details.get('name', ''))
-                                    edit_age = st.number_input("Age", min_value=15, max_value=60,
-                                        value=int(patient_details.get('age', 30)) if patient_details.get('age') else 30)
-                                    edit_weight = st.number_input("Weight (kg)", min_value=30.0, max_value=200.0,
-                                        value=float(patient_details.get('weight', 65.0)) if patient_details.get('weight') else 65.0)
-                                with col2:
-                                    edit_weeks = st.number_input("Gestational Weeks", min_value=9, max_value=42,
-                                        value=int(patient_details.get('weeks', 12)) if patient_details.get('weeks') else 12)
-                                    edit_height = st.number_input("Height (cm)", min_value=100, max_value=220,
-                                        value=int(patient_details.get('height', 165)) if patient_details.get('height') else 165)
-                                    if edit_weight > 0 and edit_height > 0:
-                                        edit_bmi = round(edit_weight / ((edit_height/100)**2), 1)
-                                        st.metric("BMI (calculated)", edit_bmi)
-                                    else:
-                                        edit_bmi = 0.0
-
-                                edit_notes = st.text_area("Clinical Notes",
-                                    value=patient_details.get('notes', '') or '',
-                                    height=100)
-
-                                if st.form_submit_button("💾 Update Patient Information", type="primary"):
-                                    update_data = {
-                                        'name': edit_name,
-                                        'age': edit_age,
-                                        'weight': edit_weight,
-                                        'height': edit_height,
-                                        'bmi': edit_bmi,
-                                        'weeks': edit_weeks,
-                                        'notes': edit_notes
-                                    }
-                                    success, message = update_patient(patient_id, update_data)
-                                    if success:
-                                        st.success(f"✅ {message}")
-                                        st.rerun()
-                                    else:
-                                        st.error(f"❌ Failed to update: {message}")
-
-                        # Show patient's test results with editing capability
-                        with st.expander("📊 Patient Test Results (View & Edit)", expanded=False):
-                            with get_db_connection() as results_conn:
-                                results_query = """
-                                    SELECT r.id, r.created_at, r.panel_type, r.qc_status,
-                                           r.t21_res, r.t18_res, r.t13_res, r.sca_res, r.final_summary,
-                                           r.qc_override, r.qc_override_reason
-                                    FROM results r
-                                    WHERE r.patient_id = ?
-                                    ORDER BY r.created_at DESC
-                                """
-                                patient_results = pd.read_sql(results_query, results_conn, params=(patient_id,))
-
-                            if not patient_results.empty:
-                                patient_results['created_at'] = pd.to_datetime(patient_results['created_at']).dt.strftime('%Y-%m-%d %H:%M')
-
-                                # Track selected result for editing
-                                if 'selected_result_id' not in st.session_state:
-                                    st.session_state.selected_result_id = None
-
-                                # Display results as cards with edit buttons
-                                st.markdown(f"**{len(patient_results)} Test Result(s) Found**")
-                                for _, result_row in patient_results.iterrows():
-                                    result_dict = result_row.to_dict()
-                                    render_test_result_card(result_dict, card_key=f"result_card_{result_row['id']}")
-                                    if st.button(f"✏️ Edit Result #{result_row['id']}", key=f"edit_result_btn_{result_row['id']}"):
-                                        st.session_state.selected_result_id = result_row['id']
-                                        st.rerun()
-
-                                # Show edit form for selected result
-                                if st.session_state.get('selected_result_id'):
-                                    st.markdown("---")
-                                    col_edit_title, col_cancel = st.columns([4, 1])
-                                    with col_edit_title:
-                                        st.subheader(f"✏️ Editing Result #{st.session_state.selected_result_id}")
-                                    with col_cancel:
-                                        if st.button("Cancel", key="cancel_result_edit"):
-                                            st.session_state.selected_result_id = None
-                                            st.rerun()
-
-                                    result_id = st.session_state.selected_result_id
-                                    result_details = get_result_details(result_id)
-
-                                    if result_details:
-                                        # Get QC metrics with defaults
-                                        qc_m = result_details.get('qc_metrics', {})
-                                        full_z = result_details.get('full_z', {})
-
-                                        with st.form(key=f"edit_result_form_{result_id}"):
-                                            st.markdown("**Panel & Sequencing Metrics**")
-                                            panel_col, reads_col, cff_col = st.columns(3)
-                                            edit_panel = panel_col.selectbox("Panel Type",
-                                                options=list(config['PANEL_READ_LIMITS'].keys()),
-                                                index=list(config['PANEL_READ_LIMITS'].keys()).index(result_details['panel_type']) if result_details['panel_type'] in config['PANEL_READ_LIMITS'] else 0)
-                                            edit_reads = reads_col.number_input("Reads (M)", min_value=0.0, max_value=100.0,
-                                                value=float(qc_m.get('reads', 8.0)))
-                                            edit_cff = cff_col.number_input("Cff %", min_value=0.0, max_value=50.0,
-                                                value=float(qc_m.get('cff', 10.0)))
-
-                                            gc_col, qs_col, uniq_col, err_col = st.columns(4)
-                                            edit_gc = gc_col.number_input("GC %", min_value=0.0, max_value=100.0,
-                                                value=float(qc_m.get('gc', 40.0)))
-                                            edit_qs = qs_col.number_input("QS", min_value=0.0, max_value=10.0,
-                                                value=float(qc_m.get('qs', 1.0)))
-                                            edit_uniq = uniq_col.number_input("Unique %", min_value=0.0, max_value=100.0,
-                                                value=float(qc_m.get('unique_rate', 75.0)))
-                                            edit_err = err_col.number_input("Error %", min_value=0.0, max_value=5.0,
-                                                value=float(qc_m.get('error_rate', 0.1)))
-
-                                            st.markdown("---")
-                                            st.markdown("**Trisomy Z-Scores**")
-                                            z21_col, z18_col, z13_col = st.columns(3)
-                                            edit_z21 = z21_col.number_input("Z-21", min_value=-10.0, max_value=50.0,
-                                                value=float(full_z.get('21', full_z.get(21, 0.5))))
-                                            edit_z18 = z18_col.number_input("Z-18", min_value=-10.0, max_value=50.0,
-                                                value=float(full_z.get('18', full_z.get(18, 0.5))))
-                                            edit_z13 = z13_col.number_input("Z-13", min_value=-10.0, max_value=50.0,
-                                                value=float(full_z.get('13', full_z.get(13, 0.5))))
-
-                                            st.markdown("**Sex Chromosome Analysis**")
-                                            sca_col, zxx_col, zxy_col = st.columns(3)
-                                            # Extract SCA type from result
-                                            current_sca = result_details.get('sca_res', '')
-                                            sca_types = ["XX", "XY", "XO", "XXX", "XXY", "XYY", "XXX+XY", "XO+XY"]
-                                            detected_sca = "XX"
-                                            # Check mosaicism types first (more specific)
-                                            if "XXX+XY" in current_sca.upper():
-                                                detected_sca = "XXX+XY"
-                                            elif "XO+XY" in current_sca.upper():
-                                                detected_sca = "XO+XY"
-                                            else:
-                                                for st_type in sca_types[:6]:  # Check non-mosaicism types
-                                                    if st_type in current_sca.upper():
-                                                        detected_sca = st_type
-                                                        break
-                                            edit_sca_type = sca_col.selectbox("SCA Type", options=sca_types,
-                                                index=sca_types.index(detected_sca) if detected_sca in sca_types else 0)
-                                            edit_zxx = zxx_col.number_input("Z-XX", min_value=-10.0, max_value=50.0,
-                                                value=float(full_z.get('XX', 0.0)))
-                                            edit_zxy = zxy_col.number_input("Z-XY", min_value=-10.0, max_value=50.0,
-                                                value=float(full_z.get('XY', 0.0)))
-
-                                            st.markdown("---")
-                                            st.markdown("**Findings (CNV & RAT)**")
-                                            # Parse CNV list
-                                            cnv_list = result_details.get('cnv_list', [])
-                                            if cnv_list and isinstance(cnv_list, list):
-                                                cnv_text = "; ".join(cnv_list) if isinstance(cnv_list[0], str) else "; ".join([f"{c.get('size', 0)}Mb ({c.get('ratio', 0)}%)" for c in cnv_list])
-                                            else:
-                                                cnv_text = ""
-                                            edit_cnv = st.text_area("CNV Findings (format: size Mb (ratio%); ...)", value=cnv_text, height=60,
-                                                help="Enter CNV findings separated by semicolons, e.g., '5Mb (8%); 10Mb (12%)'")
-
-                                            # Parse RAT list
-                                            rat_list = result_details.get('rat_list', [])
-                                            if rat_list and isinstance(rat_list, list):
-                                                rat_text = "; ".join(rat_list) if isinstance(rat_list[0], str) else "; ".join([f"Chr {r.get('chr', 0)} (Z:{r.get('z', 0)})" for r in rat_list])
-                                            else:
-                                                rat_text = ""
-                                            edit_rat = st.text_area("RAT Findings (format: Chr # (Z:score); ...)", value=rat_text, height=60,
-                                                help="Enter RAT findings separated by semicolons, e.g., 'Chr 7 (Z:4.5); Chr 16 (Z:5.2)'")
-
-                                            st.markdown("---")
-                                            recalc_results = st.checkbox("Recalculate test results from Z-scores", value=True,
-                                                help="If checked, T21/T18/T13/SCA results and QC will be recalculated based on the edited Z-scores and metrics")
-
-                                            if st.form_submit_button("💾 Update Test Result", type="primary"):
-                                                # Prepare updated QC metrics
-                                                new_qc_metrics = {
-                                                    'reads': edit_reads,
-                                                    'cff': edit_cff,
-                                                    'gc': edit_gc,
-                                                    'qs': edit_qs,
-                                                    'unique_rate': edit_uniq,
-                                                    'error_rate': edit_err
-                                                }
-
-                                                # Prepare updated Z-scores
-                                                new_full_z = {
-                                                    '21': edit_z21, '18': edit_z18, '13': edit_z13,
-                                                    'XX': edit_zxx, 'XY': edit_zxy
-                                                }
-                                                # Preserve other z-scores from original
-                                                for k, v in full_z.items():
-                                                    if str(k) not in ['21', '18', '13', 'XX', 'XY']:
-                                                        new_full_z[str(k)] = v
-
-                                                if recalc_results:
-                                                    # Recalculate clinical results
-                                                    t21_res, t21_risk = analyze_trisomy(config, edit_z21, "21")
-                                                    t18_res, t18_risk = analyze_trisomy(config, edit_z18, "18")
-                                                    t13_res, t13_risk = analyze_trisomy(config, edit_z13, "13")
-                                                    sca_res, sca_risk = analyze_sca(config, edit_sca_type, edit_zxx, edit_zxy, edit_cff)
-
-                                                    # Parse and analyze CNV
-                                                    analyzed_cnvs = []
-                                                    is_cnv_high = False
-                                                    if edit_cnv.strip():
-                                                        for cnv_item in edit_cnv.split(';'):
-                                                            cnv_item = cnv_item.strip()
-                                                            if cnv_item:
-                                                                # Try to parse "XMb (Y%)" format
-                                                                import re
-                                                                match = re.search(r'([\d.]+)\s*[Mm]b.*?([\d.]+)\s*%', cnv_item)
-                                                                if match:
-                                                                    sz, rt = float(match.group(1)), float(match.group(2))
-                                                                    msg, _, risk = analyze_cnv(sz, rt)
-                                                                    if risk == "HIGH": is_cnv_high = True
-                                                                    analyzed_cnvs.append(f"{sz}Mb ({rt}%) -> {msg}")
-                                                                else:
-                                                                    analyzed_cnvs.append(cnv_item)
-
-                                                    # Parse and analyze RAT
-                                                    analyzed_rats = []
-                                                    is_rat_high = False
-                                                    if edit_rat.strip():
-                                                        for rat_item in edit_rat.split(';'):
-                                                            rat_item = rat_item.strip()
-                                                            if rat_item:
-                                                                match = re.search(r'[Cc]hr\s*(\d+).*?[Zz]:\s*([\d.]+)', rat_item)
-                                                                if match:
-                                                                    r_chr, r_z = int(match.group(1)), float(match.group(2))
-                                                                    msg, risk = analyze_rat(config, r_chr, r_z)
-                                                                    if risk in ["POSITIVE", "HIGH"]: is_rat_high = True
-                                                                    analyzed_rats.append(f"Chr {r_chr} (Z:{r_z}) -> {msg}")
-                                                                    new_full_z[str(r_chr)] = r_z
-                                                                else:
-                                                                    analyzed_rats.append(rat_item)
-
-                                                    # Determine final summary
-                                                    all_risks = [t21_risk, t18_risk, t13_risk, sca_risk]
-                                                    is_positive = "POSITIVE" in all_risks
-                                                    is_high_risk = "HIGH" in all_risks or is_cnv_high or is_rat_high
-
-                                                    qc_stat, qc_msg, qc_advice = check_qc_metrics(
-                                                        config, edit_panel, edit_reads, edit_cff, edit_gc,
-                                                        edit_qs, edit_uniq, edit_err, is_positive or is_high_risk
-                                                    )
-
-                                                    final_summary = "NEGATIVE"
-                                                    if is_positive: final_summary = "POSITIVE DETECTED"
-                                                    elif is_high_risk: final_summary = "HIGH RISK (SEE ADVICE)"
-                                                    if qc_stat == "FAIL": final_summary = "INVALID (QC FAIL)"
-                                                else:
-                                                    # Keep existing results, just update metrics/z-scores
-                                                    t21_res = result_details['t21_res']
-                                                    t18_res = result_details['t18_res']
-                                                    t13_res = result_details['t13_res']
-                                                    sca_res = result_details['sca_res']
-                                                    analyzed_cnvs = cnv_list if isinstance(cnv_list, list) else []
-                                                    analyzed_rats = rat_list if isinstance(rat_list, list) else []
-                                                    qc_stat = result_details['qc_status']
-                                                    qc_msg = result_details['qc_details']
-                                                    qc_advice = result_details['qc_advice']
-                                                    final_summary = result_details['final_summary']
-
-                                                # Prepare update data
-                                                update_data = {
-                                                    'panel_type': edit_panel,
-                                                    'qc_status': qc_stat,
-                                                    'qc_details': str(qc_msg) if recalc_results else qc_msg,
-                                                    'qc_advice': qc_advice,
-                                                    'qc_metrics': new_qc_metrics,
-                                                    't21_res': t21_res,
-                                                    't18_res': t18_res,
-                                                    't13_res': t13_res,
-                                                    'sca_res': sca_res,
-                                                    'cnv_list': analyzed_cnvs,
-                                                    'rat_list': analyzed_rats,
-                                                    'full_z': new_full_z,
-                                                    'final_summary': final_summary
-                                                }
-
-                                                success, message = update_result(result_id, update_data, st.session_state.user['id'])
-                                                if success:
-                                                    st.success(f"✅ {message}")
-                                                    st.rerun()
-                                                else:
-                                                    st.error(f"❌ Failed to update: {message}")
-                            else:
-                                st.info("No test results found for this patient")
-
-                        # QC Override Section
-                        with st.expander("🔧 QC Override (Staff Validation)", expanded=False):
-                            st.markdown("**Override QC status for validation purposes.** Staff can force pass QC when clinical judgment warrants it.")
-                            with get_db_connection() as qc_conn:
-                                qc_query = """
-                                    SELECT r.id, r.qc_status, r.qc_override, r.qc_override_reason,
-                                           r.qc_override_at, u.full_name as override_by
-                                    FROM results r
-                                    LEFT JOIN users u ON r.qc_override_by = u.id
-                                    WHERE r.patient_id = ?
-                                    ORDER BY r.created_at DESC
-                                """
-                                qc_results = pd.read_sql(qc_query, qc_conn, params=(patient_id,))
-
-                            if not qc_results.empty:
-                                for _, qc_row in qc_results.iterrows():
-                                    result_id = qc_row['id']
-                                    original_status = qc_row['qc_status']
-                                    is_overridden = bool(qc_row.get('qc_override'))
-
-                                    st.markdown(f"**Result ID: {result_id}** - Original QC: `{original_status}`")
-
-                                    if is_overridden:
-                                        st.success(f"✅ QC Overridden to PASS by {qc_row.get('override_by', 'Unknown')}")
-                                        st.caption(f"Reason: {qc_row.get('qc_override_reason', 'N/A')}")
-                                        st.caption(f"Override date: {qc_row.get('qc_override_at', 'N/A')[:16] if qc_row.get('qc_override_at') else 'N/A'}")
-                                        if st.button(f"Remove Override", key=f"remove_override_{result_id}"):
-                                            ok, msg = remove_qc_override(result_id, st.session_state.user['id'])
-                                            if ok:
-                                                st.success(msg)
-                                                st.rerun()
-                                            else:
-                                                st.error(msg)
-                                    else:
-                                        if original_status in ['FAIL', 'WARNING']:
-                                            with st.form(key=f"override_form_{result_id}"):
-                                                override_reason = st.text_input(
-                                                    "Override Reason (required)",
-                                                    placeholder="e.g., Clinical judgment, repeat testing confirms negative",
-                                                    key=f"reason_{result_id}"
-                                                )
-                                                if st.form_submit_button(f"Override QC to PASS"):
-                                                    if override_reason.strip():
-                                                        ok, msg = override_qc_status(result_id, override_reason.strip(), st.session_state.user['id'])
-                                                        if ok:
-                                                            st.success(msg)
-                                                            st.rerun()
-                                                        else:
-                                                            st.error(msg)
-                                                    else:
-                                                        st.error("Please provide a reason for the override")
-                                        else:
-                                            st.info("QC already PASS - no override needed")
-                                    st.divider()
-
-                        # Delete Patient Section
-                        with st.expander("🗑️ Delete Patient", expanded=False):
-                            st.warning("**Warning:** This will permanently delete the patient and ALL their test results. This action cannot be undone.")
-
-                            # Show how many results will be deleted
-                            with get_db_connection() as del_conn:
-                                result_count_query = "SELECT COUNT(*) FROM results WHERE patient_id = ?"
-                                result_count = pd.read_sql(result_count_query, del_conn, params=(patient_id,)).iloc[0, 0]
-
-                            st.info(f"This patient has **{result_count}** test result(s) that will be deleted.")
-
-                            confirm_delete = st.checkbox(f"I confirm I want to permanently delete patient '{patient_details['mrn']}'", key=f"confirm_del_{patient_id}")
-
-                            if st.button("🗑️ Delete Patient Permanently", type="secondary", disabled=not confirm_delete, key=f"delete_patient_{patient_id}"):
-                                ok, msg = delete_patient(patient_id, hard_delete=True)
-                                if ok:
-                                    st.success(msg)
-                                    st.rerun()
-                                else:
-                                    st.error(msg)
-        else:
-            st.info("No records found")
+                if st.button("Delete Record", type="secondary", disabled=not confirm_del, use_container_width=True):
+                    ok, msg = delete_record(del_id)
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
     
     # TAB 3: ANALYTICS
     with tabs[2]:
