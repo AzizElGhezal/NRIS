@@ -4004,58 +4004,47 @@ def main():
     # TAB 2: REGISTRY
     with tabs[1]:
         st.header("📊 Patient Registry")
-        
-        col_search, col_refresh = st.columns([3, 1])
+
+        # Search and controls
+        col_search, col_refresh = st.columns([4, 1])
         with col_search:
-            search_term = st.text_input("🔍 Search (Name/MRN)", "")
+            search_term = st.text_input("🔍 Search by Name or MRN", "", placeholder="Type to filter patients...")
         with col_refresh:
             st.write("")
-            if st.button("🔄 Refresh Data", help="Refresh to see latest patient data"):
+            if st.button("🔄 Refresh", help="Refresh to see latest patient data"):
                 st.rerun()
 
+        # Fetch data once
         with get_db_connection() as conn:
             query = """
-                SELECT r.id, r.created_at, p.full_name, p.mrn_id, r.panel_type,
-                       r.qc_status, r.qc_override, r.final_summary, r.full_z_json, r.t21_res
+                SELECT r.id, r.created_at, p.full_name, p.mrn_id, p.age, p.weeks,
+                       r.panel_type, r.qc_status, r.qc_override, r.final_summary,
+                       r.full_z_json, r.t21_res, r.t18_res, r.t13_res, r.sca_res
                 FROM results r
                 JOIN patients p ON p.id = r.patient_id
                 WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
                 ORDER BY r.id DESC
             """
-            df = pd.read_sql(query, conn)
+            all_records = pd.read_sql(query, conn)
 
-        if not df.empty:
+        if not all_records.empty:
+            # Apply search filter
             if search_term:
-                df = df[df['full_name'].str.contains(search_term, case=False, na=False) |
-                       df['mrn_id'].str.contains(search_term, case=False, na=False)]
-
-            df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%Y-%m-%d %H:%M')
-
-            # Get more complete data for cards
-            with get_db_connection() as card_conn:
-                full_query = """
-                    SELECT r.id, r.created_at, p.full_name, p.mrn_id, p.age, p.weeks,
-                           r.panel_type, r.qc_status, r.qc_override, r.final_summary,
-                           r.full_z_json, r.t21_res, r.t18_res, r.t13_res, r.sca_res
-                    FROM results r
-                    JOIN patients p ON p.id = r.patient_id
-                    WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
-                    ORDER BY r.id DESC
-                """
-                full_df = pd.read_sql(full_query, card_conn)
-
-            if search_term:
-                full_df = full_df[full_df['full_name'].str.contains(search_term, case=False, na=False) |
-                                  full_df['mrn_id'].str.contains(search_term, case=False, na=False)]
+                filtered_df = all_records[
+                    all_records['full_name'].str.contains(search_term, case=False, na=False) |
+                    all_records['mrn_id'].str.contains(search_term, case=False, na=False)
+                ]
+            else:
+                filtered_df = all_records
 
             # Summary stats
-            total_records = len(full_df)
-            positive_count = len(full_df[full_df['final_summary'].str.contains('POSITIVE', case=False, na=False)])
-            qc_fail_count = len(full_df[(full_df['qc_status'] == 'FAIL') & (full_df['qc_override'] != 1)])
+            total_records = len(filtered_df)
+            positive_count = len(filtered_df[filtered_df['final_summary'].str.contains('POSITIVE', case=False, na=False)])
+            qc_fail_count = len(filtered_df[(filtered_df['qc_status'] == 'FAIL') & (filtered_df['qc_override'] != 1)])
 
             stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
             with stat_col1:
-                st.metric("📋 Total Records", total_records)
+                st.metric("📋 Total", total_records)
             with stat_col2:
                 st.metric("🔴 Positive", positive_count)
             with stat_col3:
@@ -4065,49 +4054,32 @@ def main():
 
             st.divider()
 
-            # Create patient selection dropdown for viewing detailed info
-            record_options = {f"#{row['id']} - {row['full_name']} ({row['mrn_id']}) - {row['final_summary']}": idx
-                             for idx, row in full_df.iterrows()}
-
-            col_select, col_view_mode = st.columns([3, 1])
-            with col_select:
-                selected_record_label = st.selectbox(
-                    "🔎 Select a record to view details",
-                    options=["-- Select a record --"] + list(record_options.keys()),
-                    key="registry_record_selector"
-                )
-            with col_view_mode:
-                show_all_cards = st.checkbox("Show all cards", value=False, help="Display all records as cards (may be slow for large datasets)")
-
-            # Display selected patient info card
-            if selected_record_label != "-- Select a record --":
-                idx = record_options[selected_record_label]
-                record = full_df.iloc[idx].to_dict()
-                record['created_at'] = str(record.get('created_at', ''))[:16]
-
-                st.markdown("### 📋 Selected Record Details")
-                render_patient_info_card(record)
-
-            # Optionally show all cards (paginated)
-            if show_all_cards:
-                st.markdown("### 📂 All Records")
+            if total_records > 0:
                 # Pagination
                 items_per_page = 10
-                total_pages = max(1, (len(full_df) + items_per_page - 1) // items_per_page)
+                total_pages = max(1, (total_records + items_per_page - 1) // items_per_page)
 
-                page_col1, page_col2, page_col3 = st.columns([1, 2, 1])
+                page_col1, page_col2, page_col3 = st.columns([2, 1, 2])
                 with page_col2:
                     current_page = st.number_input("Page", min_value=1, max_value=total_pages, value=1, key="registry_page")
 
                 start_idx = (current_page - 1) * items_per_page
-                end_idx = min(start_idx + items_per_page, len(full_df))
+                end_idx = min(start_idx + items_per_page, total_records)
 
-                st.caption(f"Showing {start_idx + 1}-{end_idx} of {len(full_df)} records")
+                st.caption(f"Showing {start_idx + 1}-{end_idx} of {total_records} records" +
+                          (f" (filtered from {len(all_records)})" if search_term else ""))
 
-                for idx in range(start_idx, end_idx):
-                    record = full_df.iloc[idx].to_dict()
-                    record['created_at'] = str(record.get('created_at', ''))[:16]
-                    render_patient_info_card(record, card_key=f"card_{idx}")
+                # Display patient cards
+                for i in range(start_idx, end_idx):
+                    record = filtered_df.iloc[i].to_dict()
+                    created_at = record.get('created_at', '')
+                    record['created_at'] = str(created_at)[:16] if created_at else 'N/A'
+                    render_patient_info_card(record, card_key=f"reg_card_{i}")
+            else:
+                if search_term:
+                    st.warning(f"No records found matching '{search_term}'")
+                else:
+                    st.info("No records in the registry")
 
             st.divider()
 
@@ -4218,6 +4190,10 @@ def main():
             st.divider()
             st.subheader("👤 Patient Details & Edit")
 
+            # Search for patient
+            patient_search = st.text_input("🔍 Search patient by Name or MRN", "", key="patient_edit_search",
+                                          placeholder="Type to search for a patient...")
+
             # Get list of unique patients (excluding deleted)
             with get_db_connection() as patient_conn:
                 patients_query = """
@@ -4231,21 +4207,55 @@ def main():
                 patients_df = pd.read_sql(patients_query, patient_conn)
 
             if not patients_df.empty:
-                # Create selection options
-                patient_options = {f"{row['mrn_id']} - {row['full_name']} ({row['result_count']} results)": row['id']
-                                   for _, row in patients_df.iterrows()}
+                # Filter patients based on search
+                if patient_search:
+                    filtered_patients = patients_df[
+                        patients_df['full_name'].str.contains(patient_search, case=False, na=False) |
+                        patients_df['mrn_id'].str.contains(patient_search, case=False, na=False)
+                    ]
+                else:
+                    filtered_patients = patients_df
 
-                selected_patient_label = st.selectbox(
-                    "Select Patient to View/Edit",
-                    options=["-- Select a patient --"] + list(patient_options.keys()),
-                    key="patient_selector"
-                )
+                if len(filtered_patients) == 0:
+                    st.warning(f"No patients found matching '{patient_search}'")
+                elif len(filtered_patients) > 10 and not patient_search:
+                    st.info(f"📋 {len(patients_df)} patients in database. Use the search box above to find a specific patient.")
+                else:
+                    # Show matching patients as clickable cards
+                    st.caption(f"Found {len(filtered_patients)} patient(s)" + (f" matching '{patient_search}'" if patient_search else ""))
 
-                if selected_patient_label != "-- Select a patient --":
-                    patient_id = patient_options[selected_patient_label]
+                    # Use session state to track selected patient
+                    if 'selected_patient_id' not in st.session_state:
+                        st.session_state.selected_patient_id = None
+
+                    # Display patient selection buttons
+                    for _, patient_row in filtered_patients.iterrows():
+                        col_info, col_btn = st.columns([4, 1])
+                        with col_info:
+                            st.markdown(f"**{patient_row['full_name']}** (MRN: {patient_row['mrn_id']}) - {patient_row['result_count']} result(s)")
+                        with col_btn:
+                            if st.button("View/Edit", key=f"select_patient_{patient_row['id']}"):
+                                st.session_state.selected_patient_id = patient_row['id']
+                                st.rerun()
+
+                # Show selected patient details
+                if st.session_state.get('selected_patient_id'):
+                    patient_id = st.session_state.selected_patient_id
                     patient_details = get_patient_details(patient_id)
 
                     if patient_details:
+                        st.divider()
+
+                        # Header with close button
+                        col_title, col_close = st.columns([4, 1])
+                        with col_title:
+                            st.markdown(f"### 👤 {patient_details.get('name', 'Unknown')}")
+                        with col_close:
+                            if st.button("✖ Close", key="close_patient_details"):
+                                st.session_state.selected_patient_id = None
+                                st.session_state.selected_result_id = None
+                                st.rerun()
+
                         with st.expander("📋 View & Edit Patient Information", expanded=True):
                             st.info(f"Patient ID: {patient_details['mrn']} | Created: {patient_details.get('created_at', 'N/A')[:10] if patient_details.get('created_at') else 'N/A'}")
 
@@ -4305,24 +4315,31 @@ def main():
                             if not patient_results.empty:
                                 patient_results['created_at'] = pd.to_datetime(patient_results['created_at']).dt.strftime('%Y-%m-%d %H:%M')
 
-                                # Display results as cards
+                                # Track selected result for editing
+                                if 'selected_result_id' not in st.session_state:
+                                    st.session_state.selected_result_id = None
+
+                                # Display results as cards with edit buttons
                                 st.markdown(f"**{len(patient_results)} Test Result(s) Found**")
                                 for _, result_row in patient_results.iterrows():
-                                    render_test_result_card(result_row.to_dict(), card_key=f"result_card_{result_row['id']}")
+                                    result_dict = result_row.to_dict()
+                                    render_test_result_card(result_dict, card_key=f"result_card_{result_row['id']}")
+                                    if st.button(f"✏️ Edit Result #{result_row['id']}", key=f"edit_result_btn_{result_row['id']}"):
+                                        st.session_state.selected_result_id = result_row['id']
+                                        st.rerun()
 
-                                # Result selection for editing
-                                st.markdown("---")
-                                st.subheader("✏️ Edit Test Result")
-                                result_options = {f"Result #{row['id']} - {row['created_at']} ({row['panel_type']})": row['id']
-                                                  for _, row in patient_results.iterrows()}
-                                selected_result_label = st.selectbox(
-                                    "Select Result to Edit",
-                                    options=["-- Select a result --"] + list(result_options.keys()),
-                                    key="result_selector"
-                                )
+                                # Show edit form for selected result
+                                if st.session_state.get('selected_result_id'):
+                                    st.markdown("---")
+                                    col_edit_title, col_cancel = st.columns([4, 1])
+                                    with col_edit_title:
+                                        st.subheader(f"✏️ Editing Result #{st.session_state.selected_result_id}")
+                                    with col_cancel:
+                                        if st.button("Cancel", key="cancel_result_edit"):
+                                            st.session_state.selected_result_id = None
+                                            st.rerun()
 
-                                if selected_result_label != "-- Select a result --":
-                                    result_id = result_options[selected_result_label]
+                                    result_id = st.session_state.selected_result_id
                                     result_details = get_result_details(result_id)
 
                                     if result_details:
