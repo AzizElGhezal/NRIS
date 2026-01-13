@@ -1427,6 +1427,42 @@ def get_result_details(result_id: int) -> Optional[Dict]:
         pass
     return None
 
+def get_result_for_card(result_id: int) -> Optional[Dict]:
+    """Get combined result and patient data for card display."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT r.id, r.created_at, p.full_name, p.mrn_id, p.age, p.weeks,
+                       r.panel_type, r.qc_status, r.qc_override, r.final_summary,
+                       r.full_z_json, r.t21_res, r.t18_res, r.t13_res, r.sca_res
+                FROM results r
+                JOIN patients p ON p.id = r.patient_id
+                WHERE r.id = ?
+            """, (result_id,))
+            row = c.fetchone()
+            if row:
+                return {
+                    'id': row[0],
+                    'created_at': row[1],
+                    'full_name': row[2],
+                    'mrn_id': row[3],
+                    'age': row[4],
+                    'weeks': row[5],
+                    'panel_type': row[6],
+                    'qc_status': row[7],
+                    'qc_override': row[8],
+                    'final_summary': row[9],
+                    'full_z_json': row[10],
+                    't21_res': row[11],
+                    't18_res': row[12],
+                    't13_res': row[13],
+                    'sca_res': row[14]
+                }
+    except Exception:
+        pass
+    return None
+
 def get_patient_details(patient_id: int) -> Optional[Dict]:
     """Get full patient details including all results (excluding deleted patients)."""
     try:
@@ -3949,36 +3985,44 @@ def main():
             else:
                 st.success(f"✅ QC PASSED")
 
-            # Calculate Reportable status for each result
-            effective_qc = qc['status']
-            t21_rep, _ = get_reportable_status(res['t21'], effective_qc)
-            t18_rep, _ = get_reportable_status(res['t18'], effective_qc)
-            t13_rep, _ = get_reportable_status(res['t13'], effective_qc)
-            sca_rep, _ = get_reportable_status(res['sca'], effective_qc)
+            # Display result using patient info card
+            if st.session_state.last_report_id:
+                card_record = get_result_for_card(st.session_state.last_report_id)
+                if card_record:
+                    render_patient_info_card(card_record, card_key="analysis_result_card")
 
-            rows = [
-                ["Trisomy 21", res['t21'], t21_rep],
-                ["Trisomy 18", res['t18'], t18_rep],
-                ["Trisomy 13", res['t13'], t13_rep],
-                ["Sex Chromosomes", res['sca'], sca_rep]
-            ]
-            for i in res['cnv_list']:
-                cnv_rep, _ = get_reportable_status(i, effective_qc)
-                rows.append(["CNV", i, cnv_rep])
-            for i in res['rat_list']:
-                rat_rep, _ = get_reportable_status(i, effective_qc)
-                rows.append(["RAT", i, rat_rep])
+                    # Display CNV and RAT findings if present
+                    if res['cnv_list'] or res['rat_list']:
+                        st.markdown("""
+                        <div style="background: white; padding: 12px; border-radius: 8px; margin-top: 12px;">
+                            <div style="font-size: 0.85em; color: #7F8C8D; margin-bottom: 8px;">Additional Findings</div>
+                        """, unsafe_allow_html=True)
 
-            df_res = pd.DataFrame(rows, columns=["Test", "Result", "Reportable"])
+                        if res['cnv_list']:
+                            for cnv in res['cnv_list']:
+                                cnv_rep, _ = get_reportable_status(cnv, qc['status'])
+                                st.markdown(f"""
+                                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #eee;">
+                                    <span style="color: #7F8C8D;">CNV:</span>
+                                    <span style="font-weight: 600; color: #2C3E50;">{cnv}</span>
+                                    <span style="color: {'#27AE60' if cnv_rep == 'Yes' else '#E74C3C'};">{cnv_rep}</span>
+                                </div>
+                                """, unsafe_allow_html=True)
 
-            def color_rows(val):
-                s = str(val)
-                if "POSITIVE" in s: return 'background-color: #ffcccc; font-weight: bold'
-                if "Re-library" in s or "Resample" in s: return 'background-color: #fff3cd'
-                return ''
+                        if res['rat_list']:
+                            for rat in res['rat_list']:
+                                rat_rep, _ = get_reportable_status(rat, qc['status'])
+                                st.markdown(f"""
+                                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #eee;">
+                                    <span style="color: #7F8C8D;">RAT:</span>
+                                    <span style="font-weight: 600; color: #2C3E50;">{rat}</span>
+                                    <span style="color: {'#27AE60' if rat_rep == 'Yes' else '#E74C3C'};">{rat_rep}</span>
+                                </div>
+                                """, unsafe_allow_html=True)
 
-            st.dataframe(df_res.style.map(color_rows, subset=['Result']), use_container_width=True)
-            st.info(f"📋 FINAL: {res['final']}")
+                        st.markdown("</div>", unsafe_allow_html=True)
+                else:
+                    st.info(f"📋 FINAL: {res['final']}")
 
             if st.session_state.last_report_id:
                 col_a, col_b, col_c = st.columns([1, 1, 1])
