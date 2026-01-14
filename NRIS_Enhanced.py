@@ -1044,8 +1044,26 @@ def get_qc_override_info(result_id: int) -> Optional[Dict]:
         pass
     return None
 
+def validate_mrn(mrn: str) -> Tuple[bool, str]:
+    """Validate that MRN is a numerical value.
+
+    Returns:
+        (is_valid, error_message)
+    """
+    if not mrn or not mrn.strip():
+        return False, "MRN cannot be empty"
+
+    mrn = mrn.strip()
+
+    # Check if MRN is numerical (can contain only digits)
+    if not mrn.isdigit():
+        return False, "MRN must be a numerical value (digits only)"
+
+    return True, ""
+
 def check_duplicate_patient(mrn: str) -> Tuple[bool, Optional[Dict]]:
-    """Check if a patient with this MRN already exists (excluding deleted). Returns (exists, patient_info)."""
+    """Check if a patient with this MRN already exists. Returns (exists, patient_info).
+    With simplified system: only active patients exist (no soft deletes)."""
     try:
         with get_db_connection() as conn:
             c = conn.cursor()
@@ -1053,7 +1071,7 @@ def check_duplicate_patient(mrn: str) -> Tuple[bool, Optional[Dict]]:
                 SELECT p.id, p.full_name, p.mrn_id, p.age, p.weeks, COUNT(r.id) as result_count
                 FROM patients p
                 LEFT JOIN results r ON r.patient_id = p.id
-                WHERE p.mrn_id = ? AND (p.is_deleted = 0 OR p.is_deleted IS NULL)
+                WHERE p.mrn_id = ?
                 GROUP BY p.id
             """, (mrn,))
             row = c.fetchone()
@@ -1070,12 +1088,13 @@ def check_duplicate_patient(mrn: str) -> Tuple[bool, Optional[Dict]]:
         pass
     return False, None
 
-def delete_patient(patient_id: int, hard_delete: bool = False) -> Tuple[bool, str]:
+def delete_patient(patient_id: int, hard_delete: bool = True) -> Tuple[bool, str]:
     """Delete a patient and all associated results.
+    Patient ID is never reused (ghost patient - ID stays occupied).
 
     Args:
         patient_id: The database ID of the patient
-        hard_delete: If True, permanently delete. If False, soft delete (but auto hard-delete orphans).
+        hard_delete: Kept for backwards compatibility but always does hard delete
 
     Returns:
         (success, message)
@@ -1092,182 +1111,50 @@ def delete_patient(patient_id: int, hard_delete: bool = False) -> Tuple[bool, st
 
             mrn, name = patient
 
-            # Check if patient has any results - orphans (no results) are always hard deleted
+            # Count results for audit log
             c.execute("SELECT COUNT(*) FROM results WHERE patient_id = ?", (patient_id,))
             result_count = c.fetchone()[0]
 
-            # Auto hard-delete if patient has no results (orphan) to free up the ID
-            if result_count == 0:
-                hard_delete = True
+            # Delete all associated results first
+            c.execute("DELETE FROM results WHERE patient_id = ?", (patient_id,))
 
-            if hard_delete:
-                # First delete all associated results
-                c.execute("DELETE FROM results WHERE patient_id = ?", (patient_id,))
-                deleted_results = c.rowcount
+            # Delete the patient (ID will never be reused - becomes ghost patient)
+            c.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
 
-                # Then delete the patient
-                c.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
-
-                conn.commit()
-                log_audit("HARD_DELETE_PATIENT",
-                         f"Permanently deleted patient {mrn} ({name}) and {deleted_results} results",
-                         st.session_state.user['id'] if 'user' in st.session_state else None)
-                return True, f"Permanently deleted patient {mrn} and {deleted_results} associated results"
-            else:
-                # Soft delete - mark as deleted AND modify MRN to free it for reuse
-                # Store original MRN in clinical_notes for potential recovery
-                timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-                deleted_mrn = f"DELETED_{timestamp}_{mrn}"
-
-                # Get current clinical notes to preserve them
-                c.execute("SELECT clinical_notes FROM patients WHERE id = ?", (patient_id,))
-                current_notes = c.fetchone()[0] or ''
-
-                # Append original MRN to notes for recovery purposes
-                recovery_note = f"[DELETED: Original MRN was '{mrn}']"
-                if recovery_note not in current_notes:
-                    updated_notes = f"{current_notes}\n{recovery_note}".strip()
-                else:
-                    updated_notes = current_notes
-
-                c.execute("""
-                    UPDATE patients
-                    SET is_deleted = 1, mrn_id = ?, clinical_notes = ?
-                    WHERE id = ?
-                """, (deleted_mrn, updated_notes, patient_id))
-                conn.commit()
-                log_audit("DELETE_PATIENT",
-                         f"Soft deleted patient {mrn} ({name}), MRN changed to {deleted_mrn}",
-                         st.session_state.user['id'] if 'user' in st.session_state else None)
-                return True, f"Patient {mrn} marked as deleted"
+            conn.commit()
+            log_audit("DELETE_PATIENT",
+                     f"Deleted patient {mrn} ({name}) and {result_count} results. ID {patient_id} now ghost (never reused).",
+                     st.session_state.user['id'] if 'user' in st.session_state else None)
+            return True, f"Deleted patient {mrn} and {result_count} associated results"
 
     except Exception as e:
         return False, f"Delete failed: {str(e)}"
 
-def restore_patient(patient_id: int) -> Tuple[bool, str]:
-    """Restore a soft-deleted patient. Attempts to recover original MRN from clinical notes."""
-    try:
-        with get_db_connection() as conn:
-            c = conn.cursor()
+# Removed restore_patient and cleanup_orphaned_patients functions
+# With simplified system: IDs are never reused, no soft delete, no orphan cleanup needed
 
-            # Get current patient data including notes with original MRN
-            c.execute("SELECT mrn_id, clinical_notes FROM patients WHERE id = ?", (patient_id,))
-            row = c.fetchone()
-            if not row:
-                return False, "Patient not found"
-
-            current_mrn, notes = row
-
-            # Try to extract original MRN from notes
-            original_mrn = None
-            if notes:
-                import re
-                mrn_match = re.search(r'\[DELETED: Original MRN was \'([^\']+)\'\]', notes)
-                if mrn_match:
-                    original_mrn = mrn_match.group(1)
-                    # Check if original MRN is available (not taken by another patient)
-                    c.execute("""
-                        SELECT id FROM patients
-                        WHERE mrn_id = ? AND id != ? AND (is_deleted = 0 OR is_deleted IS NULL)
-                    """, (original_mrn, patient_id))
-                    if c.fetchone():
-                        # Original MRN is taken, can't restore to it
-                        original_mrn = None
-
-            if original_mrn:
-                # Restore with original MRN and clean up notes
-                cleaned_notes = notes.replace(f"[DELETED: Original MRN was '{original_mrn}']", '').strip()
-                c.execute("""
-                    UPDATE patients
-                    SET is_deleted = 0, mrn_id = ?, clinical_notes = ?
-                    WHERE id = ?
-                """, (original_mrn, cleaned_notes, patient_id))
-            else:
-                # Just restore without changing MRN (keep the DELETED_ prefix or current MRN)
-                c.execute("UPDATE patients SET is_deleted = 0 WHERE id = ?", (patient_id,))
-
-            if c.rowcount == 0:
-                return False, "Patient not found"
-            conn.commit()
-            log_audit("RESTORE_PATIENT", f"Restored patient {patient_id}",
-                     st.session_state.user['id'] if 'user' in st.session_state else None)
-            return True, "Patient restored successfully"
-    except Exception as e:
-        return False, f"Restore failed: {str(e)}"
-
-def cleanup_orphaned_patients(include_active: bool = False) -> Tuple[int, str]:
-    """Clean up patients with no associated results (ghost patients).
-
-    Args:
-        include_active: If True, also delete active patients (is_deleted=0) with no results.
-                       If False, only delete soft-deleted patients with no results.
-    """
-    try:
-        with get_db_connection() as conn:
-            c = conn.cursor()
-            # Find and delete patients with no results
-            if include_active:
-                # Delete ALL patients with no results (including active ones)
-                c.execute("""
-                    DELETE FROM patients
-                    WHERE id NOT IN (SELECT DISTINCT patient_id FROM results WHERE patient_id IS NOT NULL)
-                """)
-            else:
-                # Only delete soft-deleted patients with no results
-                c.execute("""
-                    DELETE FROM patients
-                    WHERE id NOT IN (SELECT DISTINCT patient_id FROM results WHERE patient_id IS NOT NULL)
-                    AND (is_deleted = 1 OR is_deleted IS NULL)
-                """)
-            deleted_count = c.rowcount
-            conn.commit()
-
-            if deleted_count > 0:
-                log_audit("CLEANUP_ORPHANS", f"Removed {deleted_count} orphaned patient records (include_active={include_active})",
-                         st.session_state.user['id'] if 'user' in st.session_state else None)
-            return deleted_count, f"Cleaned up {deleted_count} orphaned patient records"
-    except Exception as e:
-        return 0, f"Cleanup failed: {str(e)}"
-
-def get_next_patient_id(cursor) -> int:
-    """Get the next available patient ID, reusing IDs from deleted patients.
-
-    This finds the lowest unused ID by looking for gaps in the sequence
-    or returning max_id + 1 if no gaps exist.
-    """
-    # Get all existing patient IDs (including deleted ones, since we want to reuse truly deleted slots)
-    cursor.execute("SELECT id FROM patients ORDER BY id")
-    existing_ids = {row[0] for row in cursor.fetchall()}
-
-    if not existing_ids:
-        return 1
-
-    # Find the first gap in the sequence starting from 1
-    expected_id = 1
-    for existing_id in sorted(existing_ids):
-        if existing_id > expected_id:
-            # Found a gap - return the missing ID
-            return expected_id
-        expected_id = existing_id + 1
-
-    # No gaps found, return the next ID after the max
-    return max(existing_ids) + 1
+# Removed get_next_patient_id - now using SQLite AUTOINCREMENT for chronological IDs that are never reused
 
 def save_result(patient: Dict, results: Dict, clinical: Dict, full_z: Optional[Dict] = None,
                 qc_metrics: Optional[Dict] = None, allow_duplicate: bool = True) -> Tuple[int, str]:
     """Save with audit logging and transaction support. Returns (result_id, message)."""
     conn = None
     try:
+        # Validate MRN is numerical
+        is_valid, error_msg = validate_mrn(patient['id'])
+        if not is_valid:
+            return 0, f"Invalid MRN: {error_msg}"
+
         conn = get_db_connection()
         c = conn.cursor()
 
         # Start transaction
         c.execute("BEGIN TRANSACTION")
 
-        # Check for existing patient (excluding deleted)
+        # Check for existing patient
         c.execute("""
             SELECT id, full_name FROM patients
-            WHERE mrn_id = ? AND (is_deleted = 0 OR is_deleted IS NULL)
+            WHERE mrn_id = ?
         """, (patient['id'],))
         existing = c.fetchone()
 
@@ -1276,20 +1163,19 @@ def save_result(patient: Dict, results: Dict, clinical: Dict, full_z: Optional[D
             existing_name = existing[1]
             if not allow_duplicate:
                 conn.rollback()
-                return 0, f"Patient with ID '{patient['id']}' already exists in registry as '{existing_name}'"
+                return 0, f"Patient with MRN '{patient['id']}' already exists in registry as '{existing_name}'"
         else:
-            # Get the next available patient ID (reusing IDs from deleted patients)
-            next_id = get_next_patient_id(c)
+            # Create new patient - let SQLite AUTOINCREMENT handle ID assignment (never reused)
             c.execute("""
                 INSERT INTO patients
-                (id, mrn_id, full_name, age, weight_kg, height_cm, bmi, weeks, clinical_notes, created_at, created_by, is_deleted)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                (mrn_id, full_name, age, weight_kg, height_cm, bmi, weeks, clinical_notes, created_at, created_by, is_deleted)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """, (
-                next_id, patient['id'], patient['name'], patient['age'], patient['weight'],
+                patient['id'], patient['name'], patient['age'], patient['weight'],
                 patient['height'], patient['bmi'], patient['weeks'], patient['notes'],
                 datetime.now().isoformat(), st.session_state.user['id']
             ))
-            patient_db_id = next_id
+            patient_db_id = c.lastrowid
 
         # Prepare QC metrics JSON
         qc_metrics_json = json.dumps(qc_metrics) if qc_metrics else "{}"
@@ -1333,7 +1219,7 @@ def update_patient(patient_id: int, data: Dict) -> Tuple[bool, str]:
                 UPDATE patients
                 SET full_name = ?, age = ?, weight_kg = ?, height_cm = ?, bmi = ?,
                     weeks = ?, clinical_notes = ?
-                WHERE id = ? AND (is_deleted = 0 OR is_deleted IS NULL)
+                WHERE id = ?
             """, (
                 data['name'], data['age'], data['weight'], data['height'],
                 data['bmi'], data['weeks'], data['notes'], patient_id
@@ -1440,7 +1326,7 @@ def get_result_for_card(result_id: int) -> Optional[Dict]:
     return None
 
 def get_patient_details(patient_id: int) -> Optional[Dict]:
-    """Get full patient details including all results (excluding deleted patients)."""
+    """Get full patient details including all results."""
     try:
         with get_db_connection() as conn:
             c = conn.cursor()
@@ -1448,7 +1334,7 @@ def get_patient_details(patient_id: int) -> Optional[Dict]:
                 SELECT p.id, p.mrn_id, p.full_name, p.age, p.weight_kg, p.height_cm,
                        p.bmi, p.weeks, p.clinical_notes, p.created_at
                 FROM patients p
-                WHERE p.id = ? AND (p.is_deleted = 0 OR p.is_deleted IS NULL)
+                WHERE p.id = ?
             """, (patient_id,))
             row = c.fetchone()
             if row:
@@ -3771,7 +3657,16 @@ def main():
             st.markdown("##### Patient Information")
             c1, c2, c3 = st.columns(3)
             p_name = c1.text_input("Patient Name", help="Full name of the patient")
-            p_id = c2.text_input("MRN", help="Medical Record Number - unique patient identifier")
+            p_id = c2.text_input("MRN", help="Medical Record Number - numerical value only")
+
+            # Validate MRN in real-time
+            mrn_valid = True
+            if p_id:
+                is_valid, error_msg = validate_mrn(p_id)
+                if not is_valid:
+                    c2.error(error_msg)
+                    mrn_valid = False
+
             p_age = c3.number_input("Maternal Age", 15, 60, 30, help="Patient's age in years")
 
             c4, c5, c6, c7 = st.columns(4)
@@ -3858,24 +3753,15 @@ def main():
         st.markdown("---")
 
         # Check for duplicate patient before save button
-        patient_action = "create_new"  # Default action
-        if p_id:
+        if p_id and mrn_valid:
             exists, existing_patient = check_duplicate_patient(p_id)
             if exists:
-                if existing_patient['result_count'] == 0:
-                    # Orphan patient with no results
-                    st.warning(f"⚠️ Patient ID '{p_id}' exists as '{existing_patient['name']}' but has **0 results**. "
-                              f"This orphan record will be replaced with new patient data.")
-                    patient_action = "replace_orphan"
-                    st.session_state['orphan_patient_id'] = existing_patient['id']
-                else:
-                    # Patient with existing results
-                    st.info(f"ℹ️ Patient ID '{p_id}' already exists as '{existing_patient['name']}' "
-                           f"(Age: {existing_patient['age']}, Results: {existing_patient['result_count']}). "
-                           f"A new result will be added to this patient's record.")
-                    patient_action = "add_to_existing"
+                # Patient with existing results - add new result to same patient
+                st.info(f"ℹ️ MRN '{p_id}' already exists as '{existing_patient['name']}' "
+                       f"(Age: {existing_patient['age']}, Results: {existing_patient['result_count']}). "
+                       f"A new result will be added to this patient's record.")
 
-        if st.button("💾 SAVE & ANALYZE", type="primary", disabled=bool(val_errors)):
+        if st.button("💾 SAVE & ANALYZE", type="primary", disabled=bool(val_errors) or not mrn_valid):
             t21_res, t21_risk = analyze_trisomy(config, z21, "21")
             t18_res, t18_risk = analyze_trisomy(config, z18, "18")
             t13_res, t13_risk = analyze_trisomy(config, z13, "13")
@@ -3927,17 +3813,7 @@ def main():
                 'error_rate': error_rate
             }
 
-            # Handle orphan patient replacement
-            if patient_action == "replace_orphan" and 'orphan_patient_id' in st.session_state:
-                try:
-                    with get_db_connection() as conn:
-                        c = conn.cursor()
-                        c.execute("DELETE FROM patients WHERE id = ?", (st.session_state['orphan_patient_id'],))
-                        conn.commit()
-                    del st.session_state['orphan_patient_id']
-                except Exception as e:
-                    st.error(f"Failed to replace orphan patient: {e}")
-
+            # Save result (will create new patient if MRN doesn't exist, or add to existing patient)
             rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics)
 
             if rid:
@@ -4148,8 +4024,7 @@ def main():
                                COUNT(r.id) as result_count, MAX(r.created_at) as last_test
                         FROM patients p
                         LEFT JOIN results r ON r.patient_id = p.id
-                        WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
-                          AND (p.full_name LIKE ? OR p.mrn_id LIKE ?)
+                        WHERE (p.full_name LIKE ? OR p.mrn_id LIKE ?)
                         GROUP BY p.id ORDER BY last_test DESC LIMIT 20
                     """
                     search_pattern = f"%{patient_search}%"
@@ -4492,7 +4367,6 @@ def main():
                     full_dump = pd.read_sql("""
                         SELECT * FROM results r
                         JOIN patients p ON p.id = r.patient_id
-                        WHERE (p.is_deleted = 0 OR p.is_deleted IS NULL)
                     """, conn)
 
                 st.download_button("📥 Download CSV", full_dump.to_csv(index=False), "nipt_registry.csv", "text/csv", use_container_width=True)
@@ -4649,33 +4523,39 @@ def main():
                 st.success(f"✅ Extracted data for {len(patients)} patient(s)")
                 st.info("📝 **Edit Mode**: You can modify any extracted values before importing. Changes are saved when you click 'Confirm & Import'.")
 
-                # Check for duplicates and show warnings/errors
-                duplicate_mrns = []
-                orphan_mrns = []  # Patients with 0 results (can be replaced)
+                # Check for existing patients and validate MRNs
+                existing_mrns = []
+                invalid_mrns = []
                 for mrn in patients.keys():
+                    # Validate MRN is numerical
+                    is_valid, error_msg = validate_mrn(mrn)
+                    if not is_valid:
+                        invalid_mrns.append((mrn, error_msg))
+                        st.error(f"🚫 MRN '{mrn}': {error_msg} - Will be SKIPPED during import.")
+                        continue
+
+                    # Check if patient exists - if so, results will be added to existing patient
                     exists, existing_patient = check_duplicate_patient(mrn)
                     if exists:
-                        if existing_patient['result_count'] == 0:
-                            # Patient exists but has no results - it's an orphan, can be cleaned up
-                            orphan_mrns.append(mrn)
-                            st.warning(f"⚠️ Patient ID '{mrn}' exists as '{existing_patient['name']}' but has 0 results. "
-                                       f"This orphan record will be replaced during import.")
-                        else:
-                            duplicate_mrns.append(mrn)
-                            st.error(f"🚫 Patient ID '{mrn}' already exists as '{existing_patient['name']}' "
-                                      f"with {existing_patient['result_count']} result(s). "
-                                      f"This patient will be SKIPPED during import (Patient ID must be unique).")
+                        existing_mrns.append(mrn)
+                        st.info(f"ℹ️ MRN '{mrn}' already exists as '{existing_patient['name']}' "
+                               f"with {existing_patient['result_count']} result(s). "
+                               f"New results will be added to this patient's record.")
 
                 # Show patients grouped by MRN with editable fields using forms
                 for mrn, records in patients.items():
-                    is_duplicate = mrn in duplicate_mrns
-                    expander_title = f"📋 Patient: {mrn} - {records[0]['patient_name']} ({len(records)} file(s))"
-                    if is_duplicate:
-                        expander_title = f"🚫 [DUPLICATE] {expander_title}"
+                    # Skip invalid MRNs
+                    if any(mrn == invalid_mrn[0] for invalid_mrn in invalid_mrns):
+                        continue
 
-                    with st.expander(expander_title, expanded=not is_duplicate):
-                        if is_duplicate:
-                            st.error("This patient ID already exists in the registry and will be skipped.")
+                    is_existing = mrn in existing_mrns
+                    expander_title = f"📋 Patient: {mrn} - {records[0]['patient_name']} ({len(records)} file(s))"
+                    if is_existing:
+                        expander_title = f"➕ [ADD TO EXISTING] {expander_title}"
+
+                    with st.expander(expander_title, expanded=True):
+                        if is_existing:
+                            st.info("Results will be added to the existing patient record with this MRN.")
 
                         for idx, record in enumerate(records, 1):
                             edit_key = f"{mrn}_{idx}"
@@ -4812,32 +4692,20 @@ def main():
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("✅ Confirm & Import All to Registry", type="primary"):
-                        success, fail, skipped, replaced = 0, 0, 0, 0
+                        success, fail, skipped = 0, 0, 0
                         config = load_config()
                         edit_data = st.session_state.get('pdf_edit_data', {})
 
                         for mrn, records in patients.items():
-                            # Check if patient exists
-                            exists, existing_patient = check_duplicate_patient(mrn)
-                            if exists:
-                                if existing_patient['result_count'] == 0:
-                                    # Orphan patient with no results - delete it first
-                                    try:
-                                        with get_db_connection() as conn:
-                                            c = conn.cursor()
-                                            c.execute("DELETE FROM patients WHERE id = ?", (existing_patient['id'],))
-                                            conn.commit()
-                                        replaced += 1
-                                        st.info(f"🔄 Replaced orphan patient record '{mrn}'")
-                                    except Exception as e:
-                                        st.error(f"Failed to replace orphan patient '{mrn}': {e}")
-                                        skipped += len(records)
-                                        continue
-                                else:
-                                    # Patient with results - skip
-                                    skipped += len(records)
-                                    st.warning(f"⚠️ Skipped patient ID '{mrn}' - already exists with {existing_patient['result_count']} result(s)")
-                                    continue
+                            # Validate MRN first
+                            is_valid, error_msg = validate_mrn(mrn)
+                            if not is_valid:
+                                skipped += len(records)
+                                st.warning(f"⚠️ Skipped MRN '{mrn}' - {error_msg}")
+                                continue
+
+                            # If patient exists, results will be added to existing patient
+                            # If not, new patient will be created with this MRN
 
                             for idx, original_data in enumerate(records, 1):
                                 try:
@@ -4934,14 +4802,12 @@ def main():
                                     fail += 1
 
                         result_msg = f"✅ Import Complete: {success} records imported"
-                        if replaced > 0:
-                            result_msg += f", {replaced} orphan records replaced"
                         if fail > 0:
                             result_msg += f", {fail} failed"
                         if skipped > 0:
-                            result_msg += f", {skipped} skipped (duplicate IDs)"
+                            result_msg += f", {skipped} skipped (invalid MRNs)"
                         st.success(result_msg)
-                        log_audit("PDF_IMPORT", f"Imported {success} records, {replaced} orphans replaced, {fail} failed, {skipped} skipped (duplicates)",
+                        log_audit("PDF_IMPORT", f"Imported {success} records, {fail} failed, {skipped} skipped (invalid MRNs)",
                                  st.session_state.user['id'])
 
                         # Clean up session state
