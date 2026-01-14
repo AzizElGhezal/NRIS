@@ -829,9 +829,9 @@ def analyze_trisomy(config: Dict, z_score: float, chrom: str) -> Tuple[str, str]
     return "POSITIVE", "POSITIVE"
 
 def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: float) -> Tuple[str, str]:
-    """Enhanced SCA analysis based on GeneMind NIPT guidelines.
+    """Enhanced SCA analysis.
 
-    SCA decision logic per document:
+    SCA decision logic:
     - XX/XY: Report Negative
     - XYY/XXY/XXX+XY: Report Positive
     - XO: If Z-score(XX) >= 4.5, report XO; else re-library
