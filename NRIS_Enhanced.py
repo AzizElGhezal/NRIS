@@ -3934,10 +3934,17 @@ def main():
             if qc_stat == "FAIL": final_summary = "INVALID (QC FAIL)"
 
             # Determine MRN based on user's duplicate handling choice
+            # Read from session state to get the actual user selection
             use_mrn = p_id
             allow_dup = True  # Default: allow adding to existing patient
-            if patient_exists and analysis_dup_choice == 'create_new' and analysis_new_mrn:
-                use_mrn = analysis_new_mrn
+
+            # Re-check if patient exists and get user's choice from session state
+            dup_exists_check, _ = check_duplicate_patient(p_id) if p_id else (False, None)
+            user_dup_choice = st.session_state.get('analysis_dup_choice', 'add_to_existing')
+            user_new_mrn = st.session_state.get('analysis_new_mrn', None)
+
+            if dup_exists_check and user_dup_choice == 'create_new' and user_new_mrn:
+                use_mrn = user_new_mrn
                 allow_dup = False  # New patient, don't allow duplicate
 
             p_data = {'name': p_name, 'id': use_mrn, 'age': p_age, 'weight': p_weight,
@@ -3963,7 +3970,14 @@ def main():
             rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics, allow_duplicate=allow_dup)
 
             if rid:
-                st.success("✅ Record Saved")
+                # Show appropriate success message based on what happened
+                if dup_exists_check and user_dup_choice == 'create_new':
+                    st.success(f"✅ Record Saved - New patient created with MRN: {use_mrn}")
+                elif dup_exists_check:
+                    st.success(f"✅ Record Saved - Added as new test result to existing patient (MRN: {use_mrn})")
+                else:
+                    st.success("✅ Record Saved")
+
                 st.session_state.last_report_id = rid
                 st.session_state.current_result = {
                     'clinical': c_data,
@@ -3972,6 +3986,11 @@ def main():
                 st.session_state.analysis_complete = True
                 st.session_state.cnv_list = []
                 st.session_state.rat_list = []
+
+                # Clean up duplicate handling session state
+                for key in ['analysis_dup_choice', 'analysis_new_mrn']:
+                    if key in st.session_state:
+                        del st.session_state[key]
             else:
                 st.error(f"Failed to save: {msg}")
         
