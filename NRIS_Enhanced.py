@@ -1,9 +1,18 @@
 """
-NIPT Result Interpretation Software (NRIS) v2.4 - Enhanced Edition
+NIPT Result Interpretation Software (NRIS) v2.5 - Simplified Patient Management Edition
 By AzizElGhezal
 ---------------------------
 Advanced clinical genetics dashboard with authentication, analytics,
 PDF reports, visualizations, and comprehensive audit logging.
+
+v2.5 Changes (Simplified Patient Sorting System):
+- Patient IDs: Chronological, never reused (ghost IDs after deletion)
+- MRN Validation: Configurable (numerical-only or alphanumeric)
+- Simplified Deletion: Hard delete only, no soft delete complexity
+- Sorting Options: Sort patients by ID (chronological) or MRN
+- Multiple Results per MRN: Full support for patient test history
+- Removed: Complex ID reuse logic, orphan cleanup, restore functions
+- Improved: Real-time MRN validation, clearer UI messaging, better help text
 """
 
 import sqlite3
@@ -61,7 +70,9 @@ DEFAULT_CONFIG = {
         'RAT_POSITIVE': 8.0,
         'RAT_AMBIGUOUS': 4.5
     },
-    'REPORT_LANGUAGE': 'en'  # Default language for PDF reports: 'en' or 'fr'
+    'REPORT_LANGUAGE': 'en',  # Default language for PDF reports: 'en' or 'fr'
+    'ALLOW_ALPHANUMERIC_MRN': False,  # If True, allows letters/numbers in MRN. If False, only digits.
+    'DEFAULT_SORT': 'id'  # Default sort order for registry: 'id' (chronological) or 'mrn' (by MRN)
 }
 
 # ==================== TRANSLATIONS ====================
@@ -1044,20 +1055,37 @@ def get_qc_override_info(result_id: int) -> Optional[Dict]:
         pass
     return None
 
-def validate_mrn(mrn: str) -> Tuple[bool, str]:
-    """Validate that MRN is a numerical value.
+def validate_mrn(mrn: str, allow_alphanumeric: bool = False) -> Tuple[bool, str]:
+    """Validate MRN format for clinical use.
+
+    Args:
+        mrn: The MRN string to validate
+        allow_alphanumeric: If True, allows letters, digits, hyphens, and underscores
+                          If False (default), only allows digits (strict numerical mode)
 
     Returns:
         (is_valid, error_message)
+
+    Note: For clinical systems, numerical MRNs are recommended to avoid confusion.
+          Leading zeros are preserved (e.g., "00123" is different from "123").
     """
     if not mrn or not mrn.strip():
         return False, "MRN cannot be empty"
 
     mrn = mrn.strip()
 
-    # Check if MRN is numerical (can contain only digits)
-    if not mrn.isdigit():
-        return False, "MRN must be a numerical value (digits only)"
+    if len(mrn) > 50:
+        return False, "MRN too long (max 50 characters)"
+
+    if allow_alphanumeric:
+        # Allow alphanumeric MRNs for backward compatibility
+        # Format: letters, digits, hyphens, underscores only
+        if not all(c.isalnum() or c in '-_' for c in mrn):
+            return False, "MRN can only contain letters, digits, hyphens, and underscores"
+    else:
+        # Strict numerical mode (default for clinical consistency)
+        if not mrn.isdigit():
+            return False, "MRN must be numerical (digits only). Use 'Allow Alphanumeric MRNs' in Settings if needed."
 
     return True, ""
 
@@ -1140,8 +1168,10 @@ def save_result(patient: Dict, results: Dict, clinical: Dict, full_z: Optional[D
     """Save with audit logging and transaction support. Returns (result_id, message)."""
     conn = None
     try:
-        # Validate MRN is numerical
-        is_valid, error_msg = validate_mrn(patient['id'])
+        # Validate MRN format based on config
+        config = load_config()
+        allow_alphanum = config.get('ALLOW_ALPHANUMERIC_MRN', False)
+        is_valid, error_msg = validate_mrn(patient['id'], allow_alphanumeric=allow_alphanum)
         if not is_valid:
             return 0, f"Invalid MRN: {error_msg}"
 
@@ -3653,16 +3683,34 @@ def main():
         st.title("🧬 NIPT Analysis")
         st.caption("Enter patient information and sequencing data to generate analysis results")
 
+        # Helpful info box
+        with st.expander("ℹ️ About MRNs and Patient Management", expanded=False):
+            st.markdown("""
+            **Medical Record Number (MRN)**: Your facility's unique patient identifier
+            - If the MRN already exists, a new result will be added to that patient's record
+            - If the MRN is new, a new patient will be created
+            - Multiple test results can be associated with the same MRN
+            - Current setting: """ + ("Alphanumeric MRNs allowed" if config.get('ALLOW_ALPHANUMERIC_MRN', False) else "Numerical MRNs only") + """
+
+            💡 **Tip**: You can change MRN validation rules in Settings if your facility uses alphanumeric identifiers.
+            """)
+
         with st.container():
             st.markdown("##### Patient Information")
             c1, c2, c3 = st.columns(3)
             p_name = c1.text_input("Patient Name", help="Full name of the patient")
-            p_id = c2.text_input("MRN", help="Medical Record Number - numerical value only")
+
+            # MRN field with validation
+            allow_alphanum = config.get('ALLOW_ALPHANUMERIC_MRN', False)
+            mrn_help = "Medical Record Number - unique identifier"
+            if not allow_alphanum:
+                mrn_help += " (digits only)"
+            p_id = c2.text_input("MRN", help=mrn_help)
 
             # Validate MRN in real-time
             mrn_valid = True
             if p_id:
-                is_valid, error_msg = validate_mrn(p_id)
+                is_valid, error_msg = validate_mrn(p_id, allow_alphanumeric=allow_alphanum)
                 if not is_valid:
                     c2.error(error_msg)
                     mrn_valid = False
@@ -4010,22 +4058,34 @@ def main():
 
             st.markdown("### Find Patient")
 
-            patient_search_col, patient_btn_col = st.columns([3, 1])
+            patient_search_col, sort_col, patient_btn_col = st.columns([2, 1, 1])
             with patient_search_col:
                 patient_search = st.text_input("Search Patient", placeholder="Enter patient name or MRN...", key="patient_detail_search", label_visibility="collapsed")
+            with sort_col:
+                default_sort = config.get('DEFAULT_SORT', 'id')
+                sort_by = st.selectbox("Sort by", options=["ID", "MRN"],
+                                      index=0 if default_sort == 'id' else 1,
+                                      key="patient_sort_order",
+                                      help="ID: Chronological order | MRN: Alphabetical by MRN")
             with patient_btn_col:
                 search_clicked = st.button("🔍 Search", use_container_width=True)
 
-            # Get patients list
+            # Get patients list with sorting
             with get_db_connection() as conn:
                 if patient_search:
-                    patients_query = """
+                    # Determine sort order based on selection
+                    if sort_by == "ID":
+                        order_by = "p.id ASC"
+                    else:  # MRN
+                        order_by = "CAST(p.mrn_id AS INTEGER) ASC" if not config.get('ALLOW_ALPHANUMERIC_MRN', False) else "p.mrn_id ASC"
+
+                    patients_query = f"""
                         SELECT p.id, p.mrn_id, p.full_name, p.age, p.weeks,
                                COUNT(r.id) as result_count, MAX(r.created_at) as last_test
                         FROM patients p
                         LEFT JOIN results r ON r.patient_id = p.id
                         WHERE (p.full_name LIKE ? OR p.mrn_id LIKE ?)
-                        GROUP BY p.id ORDER BY last_test DESC LIMIT 20
+                        GROUP BY p.id ORDER BY {order_by} LIMIT 100
                     """
                     search_pattern = f"%{patient_search}%"
                     patients_df = pd.read_sql(patients_query, conn, params=(search_pattern, search_pattern))
@@ -4038,14 +4098,18 @@ def main():
 
                 for _, p_row in patients_df.iterrows():
                     with st.container():
-                        cols = st.columns([3, 1, 1, 1])
+                        cols = st.columns([2, 1, 1, 1, 1, 1])
                         with cols[0]:
-                            st.markdown(f"**{p_row['full_name']}** (MRN: {p_row['mrn_id']})")
+                            st.markdown(f"**{p_row['full_name']}**")
                         with cols[1]:
-                            st.caption(f"Age: {p_row['age'] or 'N/A'}")
+                            st.caption(f"ID: {p_row['id']}")
                         with cols[2]:
-                            st.caption(f"Tests: {p_row['result_count']}")
+                            st.caption(f"MRN: {p_row['mrn_id']}")
                         with cols[3]:
+                            st.caption(f"Age: {p_row['age'] or 'N/A'}")
+                        with cols[4]:
+                            st.caption(f"Tests: {p_row['result_count']}")
+                        with cols[5]:
                             if st.button("Select", key=f"sel_patient_{p_row['id']}"):
                                 st.session_state.selected_patient_id = p_row['id']
                                 st.rerun()
@@ -4526,9 +4590,12 @@ def main():
                 # Check for existing patients and validate MRNs
                 existing_mrns = []
                 invalid_mrns = []
+                config = load_config()
+                allow_alphanum = config.get('ALLOW_ALPHANUMERIC_MRN', False)
+
                 for mrn in patients.keys():
-                    # Validate MRN is numerical
-                    is_valid, error_msg = validate_mrn(mrn)
+                    # Validate MRN format
+                    is_valid, error_msg = validate_mrn(mrn, allow_alphanumeric=allow_alphanum)
                     if not is_valid:
                         invalid_mrns.append((mrn, error_msg))
                         st.error(f"🚫 MRN '{mrn}': {error_msg} - Will be SKIPPED during import.")
@@ -4698,7 +4765,8 @@ def main():
 
                         for mrn, records in patients.items():
                             # Validate MRN first
-                            is_valid, error_msg = validate_mrn(mrn)
+                            allow_alphanum = config.get('ALLOW_ALPHANUMERIC_MRN', False)
+                            is_valid, error_msg = validate_mrn(mrn, allow_alphanumeric=allow_alphanum)
                             if not is_valid:
                                 skipped += len(records)
                                 st.warning(f"⚠️ Skipped MRN '{mrn}' - {error_msg}")
@@ -5022,6 +5090,78 @@ def main():
                     st.rerun()
                 else:
                     st.error("Failed to save language preference")
+
+        st.divider()
+
+        st.subheader("Patient Data Management")
+
+        st.markdown("**MRN Validation Settings**")
+        st.markdown("""
+        Configure how Medical Record Numbers (MRNs) are validated in the system.
+        - **Numerical Only** (Recommended): Only digits allowed (e.g., 12345, 00123)
+        - **Alphanumeric**: Allows letters, numbers, hyphens, and underscores (e.g., P-12345, MRN_00123)
+        """)
+
+        allow_alphanum_current = config.get('ALLOW_ALPHANUMERIC_MRN', False)
+        allow_alphanum = st.checkbox(
+            "Allow Alphanumeric MRNs",
+            value=allow_alphanum_current,
+            help="Enable if your facility uses alphanumeric MRNs. Note: Numerical-only is recommended for consistency."
+        )
+
+        if allow_alphanum != allow_alphanum_current:
+            if st.button("💾 Save MRN Validation Setting"):
+                new_config = config.copy()
+                new_config['ALLOW_ALPHANUMERIC_MRN'] = allow_alphanum
+                if save_config(new_config):
+                    mode_text = "alphanumeric" if allow_alphanum else "numerical only"
+                    st.success(f"✅ MRN validation set to {mode_text}")
+                    log_audit("CONFIG_UPDATE", f"Changed MRN validation to {mode_text}",
+                             st.session_state.user['id'])
+                    st.rerun()
+                else:
+                    st.error("Failed to save MRN validation setting")
+
+        st.markdown("---")
+
+        st.markdown("**Registry Sorting Settings**")
+        st.markdown("""
+        Choose how patients are sorted in the registry by default:
+        - **By ID**: Chronological order (order patients were added to system)
+        - **By MRN**: Sorted by Medical Record Number
+        """)
+
+        default_sort_current = config.get('DEFAULT_SORT', 'id')
+        default_sort = st.radio(
+            "Default Sort Order",
+            options=["id", "mrn"],
+            index=0 if default_sort_current == 'id' else 1,
+            format_func=lambda x: "By ID (Chronological)" if x == 'id' else "By MRN",
+            help="This sets the default sort order for patient lists in the registry"
+        )
+
+        if default_sort != default_sort_current:
+            if st.button("💾 Save Sort Order Setting"):
+                new_config = config.copy()
+                new_config['DEFAULT_SORT'] = default_sort
+                if save_config(new_config):
+                    sort_text = "ID (Chronological)" if default_sort == 'id' else "MRN"
+                    st.success(f"✅ Default sort order set to {sort_text}")
+                    log_audit("CONFIG_UPDATE", f"Changed default sort to {sort_text}",
+                             st.session_state.user['id'])
+                    st.rerun()
+                else:
+                    st.error("Failed to save sort order setting")
+
+        st.markdown("---")
+
+        st.info("""
+        ℹ️ **Understanding Patient IDs vs MRNs:**
+
+        - **Patient ID (Database ID)**: Automatically assigned, chronological, never reused. When a patient is deleted, their ID becomes a "ghost" ID.
+        - **MRN (Medical Record Number)**: Your facility's patient identifier. Can be reused if a patient is deleted and recreated.
+        - **Results**: Multiple test results can be linked to the same MRN (same patient, different tests over time).
+        """)
 
         st.divider()
 
