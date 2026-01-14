@@ -5,44 +5,6 @@ By AzizElGhezal
 Advanced clinical genetics dashboard with authentication, analytics,
 PDF reports, visualizations, and comprehensive audit logging.
 
-Version 2.4 Improvements:
-- Enhanced analysis report: Comprehensive post-analysis display showing patient
-  demographics, QC metrics, trisomy results with Z-scores, SCA results, and
-  CNV/RAT findings in a well-structured format
-- French PDF in Registry: Quick actions now include language selector for
-  English/French PDF generation directly from the Browse tab
-- Improved navigation: Clear feedback messages when selecting patients,
-  guiding users to the Patient Details tab
-- Multi-result PDF generation: Each test result in Patient Details now has
-  dedicated English and French PDF download buttons
-- Better patient selection UX: Banner notification in Patient Details tab
-  when a patient is already selected
-
-Version 2.3 Improvements:
-- Patient info cards: Registry now displays individual patient info cards
-  instead of tables for better data visualization
-- Multi-anomaly analytics: Stats dashboard properly handles samples with
-  multiple anomalies (T21+T18, etc.) with dedicated breakdown charts
-- SCA analysis: Detailed sex chromosome anomaly tracking and visualization
-- CNV/RAT tracking: Comprehensive copy number variant and rare autosomal
-  trisomy statistics in the analytics dashboard
-- Test result cards: Patient modification section shows styled result cards
-  with color-coded status indicators
-- Improved pagination: Registry supports paginated card view for large datasets
-
-Version 2.2 Improvements:
-- Bilingual PDF reports (English and French)
-- Language preference settings
-- Improved UI for technicians with helpful tooltips
-- Streamlined workflow
-
-Version 2.1 Improvements:
-- Enhanced security (password complexity, account lockout, session timeout)
-- Database integrity (foreign keys, soft delete, transactions)
-- Performance optimizations (indexes, caching, query optimization)
-- Improved PDF import (validation, error handling, confidence scoring)
-"""
-
 import sqlite3
 import json
 import io
