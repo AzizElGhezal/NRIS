@@ -4,6 +4,7 @@ By AzizElGhezal
 ---------------------------
 Advanced clinical genetics dashboard with authentication, analytics,
 PDF reports, visualizations, and comprehensive audit logging.
+"""
 
 import sqlite3
 import json
