@@ -1,5 +1,5 @@
 """
-NIPT Result Interpretation Software (NRIS) v2.5 - Simplified Patient Management Edition
+NIPT Result Interpretation Software (NRIS) v2.4 - Simplified Patient Management Edition
 By AzizElGhezal
 ---------------------------
 Advanced clinical genetics dashboard with authentication, analytics,
