@@ -84,12 +84,12 @@ echo [INFO] Opening browser in 5 seconds...
 start "" cmd /c "timeout /t 5 /nobreak >nul && start http://localhost:%PORT%"
 
 :: 7. UPDATE WINDOW TITLE TO SHOW RUNNING STATUS
-title NRIS v2.2 - Running on http://localhost:%PORT%
+title NRIS v2.4 - Running on http://localhost:%PORT%
 
 :: 8. LAUNCH NRIS
 echo.
 echo ===================================================
-echo   NRIS v2.2 Enhanced Edition
+echo   NRIS v2.4 Enhanced Edition
 echo ===================================================
 echo.
 echo   Application URL: http://localhost:%PORT%
