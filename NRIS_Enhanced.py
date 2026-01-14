@@ -1899,6 +1899,12 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
         # Use word boundaries (\b) to prevent partial matches (e.g., Z1 matching in Z10)
         for chrom in [13, 18, 21]:
             z_patterns = [
+                # Common report format: "High Risk (Z:5.00)" or "(Z: 5.00)"
+                rf'(?:Trisomy\s*)?{chrom}[^)]*?\(Z[:\s]*(-?\d+\.?\d*)\)',
+                rf'T{chrom}[^)]*?\(Z[:\s]*(-?\d+\.?\d*)\)',
+                # Format: "Z-score: 9.00" near trisomy reference
+                rf'(?:Trisomy\s*)?{chrom}\b.*?Z[-\s]?score[:\s]*(-?\d+\.?\d*)',
+                rf'T{chrom}\b.*?Z[-\s]?score[:\s]*(-?\d+\.?\d*)',
                 # Exact formats with word boundaries
                 rf'Z[-\s]?{chrom}\b[:\s]+(-?\d+\.?\d*)',
                 rf'Z{chrom}\b[:\s]*[=:]\s*(-?\d+\.?\d*)',
@@ -1935,22 +1941,32 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
 
         # Extract SCA Z-scores (XX and XY) - improved patterns
         z_xx_patterns = [
-            r'Z[-\s]?XX\b[:\s]+(-?\d+\.?\d*)',
+            # Common report format: "Z-XX: 6.00" or "Z-XX 6.00"
+            r'Z[-\s]?XX\b[:\s]*(-?\d+\.?\d*)',
             r'ZXX\b[:\s]*[=:]\s*(-?\d+\.?\d*)',
+            # Format with label: "XX Z-score: 6.00"
             r'XX\s+Z[-\s]?(?:Score)?[:\s]+(-?\d+\.?\d*)',
+            # Sex chromosome section patterns
             r'(?:Sex\s+)?(?:Chromosome\s+)?XX[:\s]+[^Z]*?Z[:\s]+(-?\d+\.?\d*)',
             r'X\s+Chromosome[:\s]+[^Z]*?Z[:\s]+(-?\d+\.?\d*)',
+            # Table format: XX | 6.00 or XX, 6.00
+            r'\bXX\b\s*[|,:\s]\s*(-?\d+\.?\d*)(?:\s|$|[|,])',
         ]
         z_val = extract_z_score(z_xx_patterns, text)
         if z_val is not None:
             data['z_scores']['XX'] = z_val
 
         z_xy_patterns = [
-            r'Z[-\s]?XY\b[:\s]+(-?\d+\.?\d*)',
+            # Common report format: "Z-XY: 0.00" or "Z-XY 0.00"
+            r'Z[-\s]?XY\b[:\s]*(-?\d+\.?\d*)',
             r'ZXY\b[:\s]*[=:]\s*(-?\d+\.?\d*)',
+            # Format with label: "XY Z-score: 0.00"
             r'XY\s+Z[-\s]?(?:Score)?[:\s]+(-?\d+\.?\d*)',
+            # Sex chromosome section patterns
             r'(?:Sex\s+)?(?:Chromosome\s+)?XY[:\s]+[^Z]*?Z[:\s]+(-?\d+\.?\d*)',
             r'Y\s+Chromosome[:\s]+[^Z]*?Z[:\s]+(-?\d+\.?\d*)',
+            # Table format: XY | 0.00 or XY, 0.00
+            r'\bXY\b\s*[|,:\s]\s*(-?\d+\.?\d*)(?:\s|$|[|,])',
         ]
         z_val = extract_z_score(z_xy_patterns, text)
         if z_val is not None:
@@ -2151,19 +2167,34 @@ def extract_data_from_pdf(pdf_file, filename: str = "") -> Optional[Dict]:
                 if field not in data or not data.get(field):
                     data[field] = data.get(field, '')
 
-        # Extract clinical notes
+        # Extract clinical notes - more restrictive to avoid capturing unrelated sections
         notes_patterns = [
-            r'(?:Clinical\s+)?Notes?[:\s]+(.+?)(?:\n\n|={3,}|Disclaimer|Limitation|$)',
-            r'Comments?[:\s]+(.+?)(?:\n\n|={3,}|$)',
-            r'(?:Additional\s+)?(?:Information|Remarks)[:\s]+(.+?)(?:\n\n|$)',
+            r'(?:Clinical\s+)?Notes?[:\s]+(.+?)(?:OBSERVATION|RESULT|Disclaimer|Limitation|Panel|Test\s+Type|QC|Quality|Summary|Interpretation|$)',
+            r'Comments?[:\s]+(.+?)(?:OBSERVATION|RESULT|Disclaimer|$)',
+            r'(?:Additional\s+)?Remarks[:\s]+(.+?)(?:OBSERVATION|RESULT|$)',
         ]
         for pattern in notes_patterns:
-            notes_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            notes_match = re.search(pattern, text, re.IGNORECASE)
             if notes_match:
                 notes = notes_match.group(1).strip()
-                # Clean up notes
+                # Clean up notes - remove section headers and markers that got captured
                 notes = re.sub(r'\s+', ' ', notes)
-                if len(notes) > 5:
+                # Remove common unwanted phrases that indicate section boundaries
+                unwanted_phrases = [
+                    r'&\s*OBSERVATIONS?',
+                    r'Nuchal\s+(?:Clarity|Translucency)',
+                    r'Key\s+clinical\s+markers:?',
+                    r'Clinical\s+markers:?',
+                    r'PATIENT\s+INFORMATION',
+                    r'SAMPLE\s+INFORMATION',
+                    r'TEST\s+RESULTS?',
+                ]
+                for phrase in unwanted_phrases:
+                    notes = re.sub(phrase, '', notes, flags=re.IGNORECASE)
+                # Clean up any resulting double spaces or leading/trailing punctuation
+                notes = re.sub(r'\s+', ' ', notes).strip()
+                notes = re.sub(r'^[&\s,;:]+|[&\s,;:]+$', '', notes).strip()
+                if len(notes) > 5 and not notes.upper().startswith(('OBSERVATION', 'RESULT', 'QC')):
                     data['notes'] = notes[:500]
                     break
 
@@ -3912,15 +3943,23 @@ def main():
                     else:
                         st.success(f"✅ QC PASSED - Results are valid")
 
-                    # Patient Information Section
+                    # Patient Information Section - Compact card layout
                     st.markdown("#### Patient Information")
-                    pat_cols = st.columns(4)
-                    pat_cols[0].metric("Patient Name", row['full_name'] or "N/A")
-                    pat_cols[1].metric("MRN", row['mrn_id'] or "N/A")
-                    pat_cols[2].metric("Age", f"{row['age']} years" if row['age'] else "N/A")
-                    pat_cols[3].metric("Gestational Weeks", f"{row['weeks']} weeks" if row['weeks'] else "N/A")
+                    p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+                    with p_col1:
+                        st.caption("Patient Name")
+                        st.markdown(f"**{row['full_name'] or 'N/A'}**")
+                    with p_col2:
+                        st.caption("MRN")
+                        st.markdown(f"**{row['mrn_id'] or 'N/A'}**")
+                    with p_col3:
+                        st.caption("Age")
+                        st.markdown(f"**{row['age']} years**" if row['age'] else "**N/A**")
+                    with p_col4:
+                        st.caption("Gestational Weeks")
+                        st.markdown(f"**{row['weeks']} weeks**" if row['weeks'] else "**N/A**")
 
-                    # QC Metrics Section
+                    # QC Metrics Section - Compact grid
                     st.markdown("#### QC Metrics")
                     qc_cols = st.columns(6)
                     qc_cols[0].metric("Reads (M)", f"{qc_metrics.get('reads', 'N/A')}")
@@ -3930,36 +3969,66 @@ def main():
                     qc_cols[4].metric("Unique %", f"{qc_metrics.get('unique_rate', 'N/A')}")
                     qc_cols[5].metric("Error %", f"{qc_metrics.get('error_rate', 'N/A')}")
 
-                    # Trisomy Results Section
+                    # Trisomy Results Section - Card style with color coding
                     st.markdown("#### Trisomy Analysis Results")
                     tri_cols = st.columns(3)
 
                     # T21
-                    t21_color = "normal" if "NEG" in str(row['t21_res']).upper() else "inverse"
                     z21 = full_z.get('21', full_z.get(21, 'N/A'))
                     z21_str = f"{float(z21):.2f}" if z21 != 'N/A' and z21 is not None else 'N/A'
-                    tri_cols[0].metric("Trisomy 21 (Down)", row['t21_res'] or "N/A", f"Z-score: {z21_str}", delta_color=t21_color)
+                    t21_val = row['t21_res'] or "N/A"
+                    t21_is_neg = "NEG" in str(t21_val).upper() or "LOW" in str(t21_val).upper()
+                    with tri_cols[0]:
+                        st.caption("Trisomy 21 (Down)")
+                        if t21_is_neg:
+                            st.success(f"**{t21_val}**")
+                        else:
+                            st.error(f"**{t21_val}**")
+                        st.caption(f"Z-score: {z21_str}")
 
                     # T18
-                    t18_color = "normal" if "NEG" in str(row['t18_res']).upper() else "inverse"
                     z18 = full_z.get('18', full_z.get(18, 'N/A'))
                     z18_str = f"{float(z18):.2f}" if z18 != 'N/A' and z18 is not None else 'N/A'
-                    tri_cols[1].metric("Trisomy 18 (Edwards)", row['t18_res'] or "N/A", f"Z-score: {z18_str}", delta_color=t18_color)
+                    t18_val = row['t18_res'] or "N/A"
+                    t18_is_neg = "NEG" in str(t18_val).upper() or "LOW" in str(t18_val).upper()
+                    with tri_cols[1]:
+                        st.caption("Trisomy 18 (Edwards)")
+                        if t18_is_neg:
+                            st.success(f"**{t18_val}**")
+                        else:
+                            st.error(f"**{t18_val}**")
+                        st.caption(f"Z-score: {z18_str}")
 
                     # T13
-                    t13_color = "normal" if "NEG" in str(row['t13_res']).upper() else "inverse"
                     z13 = full_z.get('13', full_z.get(13, 'N/A'))
                     z13_str = f"{float(z13):.2f}" if z13 != 'N/A' and z13 is not None else 'N/A'
-                    tri_cols[2].metric("Trisomy 13 (Patau)", row['t13_res'] or "N/A", f"Z-score: {z13_str}", delta_color=t13_color)
+                    t13_val = row['t13_res'] or "N/A"
+                    t13_is_neg = "NEG" in str(t13_val).upper() or "LOW" in str(t13_val).upper()
+                    with tri_cols[2]:
+                        st.caption("Trisomy 13 (Patau)")
+                        if t13_is_neg:
+                            st.success(f"**{t13_val}**")
+                        else:
+                            st.error(f"**{t13_val}**")
+                        st.caption(f"Z-score: {z13_str}")
 
-                    # SCA Section
+                    # SCA Section - Card style
                     st.markdown("#### Sex Chromosome Analysis")
-                    sca_cols = st.columns([2, 1, 1])
-                    sca_cols[0].metric("SCA Result", row['sca_res'] or "N/A")
+                    sca_cols = st.columns(3)
+                    sca_val = row['sca_res'] or "N/A"
                     z_xx = full_z.get('XX', 'N/A')
                     z_xy = full_z.get('XY', 'N/A')
-                    sca_cols[1].metric("Z-XX", f"{float(z_xx):.2f}" if z_xx != 'N/A' and z_xx is not None else 'N/A')
-                    sca_cols[2].metric("Z-XY", f"{float(z_xy):.2f}" if z_xy != 'N/A' and z_xy is not None else 'N/A')
+                    with sca_cols[0]:
+                        st.caption("SCA Result")
+                        # Truncate long SCA results
+                        sca_display = sca_val[:30] + "..." if len(str(sca_val)) > 30 else sca_val
+                        st.markdown(f"**{sca_display}**")
+                    with sca_cols[1]:
+                        st.caption("Z-XX")
+                        st.markdown(f"**{float(z_xx):.2f}**" if z_xx != 'N/A' and z_xx is not None else "**N/A**")
+                    with sca_cols[2]:
+                        st.caption("Z-XY")
+                        st.markdown(f"**{float(z_xy):.2f}**" if z_xy != 'N/A' and z_xy is not None else "**N/A**")
 
                     # CNV and RAT findings
                     if res['cnv_list'] or res['rat_list']:
@@ -4072,13 +4141,13 @@ def main():
 
             # Get patients list with sorting
             with get_db_connection() as conn:
-                if patient_search:
-                    # Determine sort order based on selection
-                    if sort_by == "ID":
-                        order_by = "p.id ASC"
-                    else:  # MRN
-                        order_by = "CAST(p.mrn_id AS INTEGER) ASC" if not config.get('ALLOW_ALPHANUMERIC_MRN', False) else "p.mrn_id ASC"
+                # Determine sort order based on selection
+                if sort_by == "ID":
+                    order_by = "p.id DESC"  # Most recent first for ID
+                else:  # MRN
+                    order_by = "CAST(p.mrn_id AS INTEGER) ASC" if not config.get('ALLOW_ALPHANUMERIC_MRN', False) else "p.mrn_id ASC"
 
+                if patient_search:
                     patients_query = f"""
                         SELECT p.id, p.mrn_id, p.full_name, p.age, p.weeks,
                                COUNT(r.id) as result_count, MAX(r.created_at) as last_test
@@ -4090,11 +4159,22 @@ def main():
                     search_pattern = f"%{patient_search}%"
                     patients_df = pd.read_sql(patients_query, conn, params=(search_pattern, search_pattern))
                 else:
-                    patients_df = pd.DataFrame()
+                    # Show recent patients when no search (sorted by selection)
+                    patients_query = f"""
+                        SELECT p.id, p.mrn_id, p.full_name, p.age, p.weeks,
+                               COUNT(r.id) as result_count, MAX(r.created_at) as last_test
+                        FROM patients p
+                        LEFT JOIN results r ON r.patient_id = p.id
+                        GROUP BY p.id ORDER BY {order_by} LIMIT 20
+                    """
+                    patients_df = pd.read_sql(patients_query, conn)
 
             # Show search results or selected patient
             if not patients_df.empty and not st.session_state.get('selected_patient_id'):
-                st.markdown(f"**Found {len(patients_df)} patient(s)**")
+                if patient_search:
+                    st.markdown(f"**Found {len(patients_df)} patient(s)**")
+                else:
+                    st.markdown(f"**Recent Patients** (showing {len(patients_df)})")
 
                 for _, p_row in patients_df.iterrows():
                     with st.container():
@@ -4115,8 +4195,8 @@ def main():
                                 st.rerun()
                         st.divider()
 
-            elif not patient_search and not st.session_state.get('selected_patient_id'):
-                st.info("Enter a patient name or MRN above to search, or select a patient from the Browse tab.")
+            elif patients_df.empty and not st.session_state.get('selected_patient_id'):
+                st.info("No patients found. Add patients through the Analysis tab or PDF Import.")
 
             # Show selected patient details
             if st.session_state.get('selected_patient_id'):
@@ -4753,8 +4833,6 @@ def main():
                             st.divider()
 
                 st.warning("⚠️ Click 'Save Changes' in each record form to save edits, then click 'Import All' below")
-                if duplicate_mrns:
-                    st.error(f"⚠️ {len(duplicate_mrns)} patient(s) with duplicate IDs will be SKIPPED: {', '.join(duplicate_mrns)}")
 
                 col1, col2 = st.columns(2)
                 with col1:
