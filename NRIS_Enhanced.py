@@ -5,7 +5,7 @@ By AzizElGhezal
 Advanced clinical genetics dashboard with authentication, analytics,
 PDF reports, visualizations, and comprehensive audit logging.
 
-v2.5 Changes (Simplified Patient Sorting System):
+v2.4.1 Changes (Simplified Patient Sorting System):
 - Patient IDs: Chronological, never reused (ghost IDs after deletion)
 - MRN Validation: Configurable (numerical-only or alphanumeric)
 - Simplified Deletion: Hard delete only, no soft delete complexity
