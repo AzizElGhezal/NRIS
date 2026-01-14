@@ -3832,15 +3832,75 @@ def main():
         st.markdown("---")
 
         # Check for duplicate patient before save button
+        analysis_dup_choice = 'add_to_existing'  # Default
+        analysis_new_mrn = None
+        patient_exists = False
+
         if p_id and mrn_valid:
             exists, existing_patient = check_duplicate_patient(p_id)
             if exists:
-                # Patient with existing results - add new result to same patient
-                st.info(f"ℹ️ MRN '{p_id}' already exists as '{existing_patient['name']}' "
-                       f"(Age: {existing_patient['age']}, Results: {existing_patient['result_count']}). "
-                       f"A new result will be added to this patient's record.")
+                patient_exists = True
+                st.warning(f"⚠️ **Duplicate MRN Detected:** MRN '{p_id}' already exists as '{existing_patient['name']}' "
+                          f"(Age: {existing_patient['age']}, Results: {existing_patient['result_count']})")
 
-        if st.button("💾 SAVE & ANALYZE", type="primary", disabled=bool(val_errors) or not mrn_valid):
+                dup_col1, dup_col2 = st.columns([1, 1])
+                with dup_col1:
+                    analysis_dup_choice = st.radio(
+                        "How do you want to handle this?",
+                        options=['add_to_existing', 'create_new'],
+                        format_func=lambda x: "Add as new test result to existing patient" if x == 'add_to_existing' else "Create new patient with different MRN",
+                        key="analysis_dup_choice",
+                        horizontal=True
+                    )
+
+                if analysis_dup_choice == 'create_new':
+                    with dup_col2:
+                        # Suggest next available MRN
+                        suggested_mrn = p_id
+                        suffix = 1
+                        while True:
+                            test_mrn = f"{p_id}_{suffix}"
+                            exists_test, _ = check_duplicate_patient(test_mrn)
+                            if not exists_test:
+                                suggested_mrn = test_mrn
+                                break
+                            suffix += 1
+                            if suffix > 100:
+                                break
+
+                        analysis_new_mrn = st.text_input(
+                            "New MRN",
+                            value=suggested_mrn,
+                            key="analysis_new_mrn",
+                            help=f"Enter a new MRN for this patient. Suggested: {suggested_mrn}"
+                        )
+
+                        # Validate new MRN
+                        if analysis_new_mrn:
+                            allow_alphanum = config.get('ALLOW_ALPHANUMERIC_MRN', False)
+                            new_mrn_valid, new_mrn_err = validate_mrn(analysis_new_mrn, allow_alphanumeric=allow_alphanum)
+                            if not new_mrn_valid:
+                                st.error(f"Invalid MRN: {new_mrn_err}")
+                            else:
+                                dup_exists, _ = check_duplicate_patient(analysis_new_mrn)
+                                if dup_exists:
+                                    st.error(f"MRN '{analysis_new_mrn}' also exists. Choose a different MRN.")
+                                else:
+                                    st.success(f"✓ MRN '{analysis_new_mrn}' is available")
+
+        # Determine if save should be disabled
+        save_disabled = bool(val_errors) or not mrn_valid
+        if patient_exists and analysis_dup_choice == 'create_new':
+            if not analysis_new_mrn:
+                save_disabled = True
+            else:
+                allow_alphanum = config.get('ALLOW_ALPHANUMERIC_MRN', False)
+                new_valid, _ = validate_mrn(analysis_new_mrn, allow_alphanumeric=allow_alphanum)
+                dup_exists, _ = check_duplicate_patient(analysis_new_mrn) if new_valid else (True, None)
+                if not new_valid or dup_exists:
+                    save_disabled = True
+
+        if st.button("💾 SAVE & ANALYZE", type="primary", disabled=save_disabled):
             t21_res, t21_risk = analyze_trisomy(config, z21, "21")
             t18_res, t18_risk = analyze_trisomy(config, z18, "18")
             t13_res, t13_risk = analyze_trisomy(config, z13, "13")
@@ -3873,7 +3933,14 @@ def main():
             elif is_high_risk: final_summary = "HIGH RISK (SEE ADVICE)"
             if qc_stat == "FAIL": final_summary = "INVALID (QC FAIL)"
 
-            p_data = {'name': p_name, 'id': p_id, 'age': p_age, 'weight': p_weight,
+            # Determine MRN based on user's duplicate handling choice
+            use_mrn = p_id
+            allow_dup = True  # Default: allow adding to existing patient
+            if patient_exists and analysis_dup_choice == 'create_new' and analysis_new_mrn:
+                use_mrn = analysis_new_mrn
+                allow_dup = False  # New patient, don't allow duplicate
+
+            p_data = {'name': p_name, 'id': use_mrn, 'age': p_age, 'weight': p_weight,
                       'height': p_height, 'bmi': bmi, 'weeks': p_weeks, 'notes': p_notes}
             r_data = {'panel': panel_type, 'qc_status': qc_stat, 'qc_msgs': qc_msg, 'qc_advice': qc_advice}
             c_data = {'t21': t21_res, 't18': t18_res, 't13': t13_res, 'sca': sca_res,
@@ -3892,8 +3959,8 @@ def main():
                 'error_rate': error_rate
             }
 
-            # Save result (will create new patient if MRN doesn't exist, or add to existing patient)
-            rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics)
+            # Save result using user's duplicate handling choice
+            rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics, allow_duplicate=allow_dup)
 
             if rid:
                 st.success("✅ Record Saved")
@@ -4673,6 +4740,10 @@ def main():
                 config = load_config()
                 allow_alphanum = config.get('ALLOW_ALPHANUMERIC_MRN', False)
 
+                # Initialize duplicate handling choices in session state
+                if 'pdf_duplicate_choices' not in st.session_state:
+                    st.session_state.pdf_duplicate_choices = {}
+
                 for mrn in patients.keys():
                     # Validate MRN format
                     is_valid, error_msg = validate_mrn(mrn, allow_alphanumeric=allow_alphanum)
@@ -4681,13 +4752,89 @@ def main():
                         st.error(f"🚫 MRN '{mrn}': {error_msg} - Will be SKIPPED during import.")
                         continue
 
-                    # Check if patient exists - if so, results will be added to existing patient
+                    # Check if patient exists
                     exists, existing_patient = check_duplicate_patient(mrn)
                     if exists:
-                        existing_mrns.append(mrn)
-                        st.info(f"ℹ️ MRN '{mrn}' already exists as '{existing_patient['name']}' "
-                               f"with {existing_patient['result_count']} result(s). "
-                               f"New results will be added to this patient's record.")
+                        existing_mrns.append((mrn, existing_patient))
+
+                # Show duplicate handling options for each existing MRN
+                if existing_mrns:
+                    st.markdown("---")
+                    st.markdown("### ⚠️ Duplicate MRN Handling")
+                    st.info("The following MRNs already exist in the registry. Choose how to handle each:")
+
+                    for mrn, existing_patient in existing_mrns:
+                        with st.container():
+                            st.markdown(f"**MRN: {mrn}** - Existing patient: {existing_patient['name']} ({existing_patient['result_count']} existing result(s))")
+
+                            # Get current choice or default
+                            choice_key = f"dup_choice_{mrn}"
+                            new_mrn_key = f"new_mrn_{mrn}"
+
+                            current_choice = st.session_state.pdf_duplicate_choices.get(mrn, {}).get('action', 'add_to_existing')
+
+                            col_opt1, col_opt2 = st.columns(2)
+                            with col_opt1:
+                                add_to_existing = st.radio(
+                                    f"Action for MRN {mrn}",
+                                    options=["add_to_existing", "create_new"],
+                                    format_func=lambda x: "Add as new test result to existing patient" if x == "add_to_existing" else "Create new patient with different MRN",
+                                    key=choice_key,
+                                    index=0 if current_choice == "add_to_existing" else 1,
+                                    horizontal=True
+                                )
+
+                            # Show new MRN input if user chose to create new
+                            if add_to_existing == "create_new":
+                                with col_opt2:
+                                    # Suggest next available MRN
+                                    suggested_mrn = mrn
+                                    suffix = 1
+                                    while True:
+                                        test_mrn = f"{mrn}_{suffix}"
+                                        exists_test, _ = check_duplicate_patient(test_mrn)
+                                        if not exists_test:
+                                            suggested_mrn = test_mrn
+                                            break
+                                        suffix += 1
+                                        if suffix > 100:
+                                            break
+
+                                    current_new_mrn = st.session_state.pdf_duplicate_choices.get(mrn, {}).get('new_mrn', suggested_mrn)
+                                    new_mrn_input = st.text_input(
+                                        f"New MRN for patient from {mrn}",
+                                        value=current_new_mrn,
+                                        key=new_mrn_key,
+                                        help=f"Suggested: {suggested_mrn}"
+                                    )
+
+                                    # Validate new MRN
+                                    if new_mrn_input:
+                                        new_mrn_valid, new_mrn_err = validate_mrn(new_mrn_input, allow_alphanumeric=allow_alphanum)
+                                        if not new_mrn_valid:
+                                            st.error(f"Invalid MRN: {new_mrn_err}")
+                                        else:
+                                            dup_exists, _ = check_duplicate_patient(new_mrn_input)
+                                            if dup_exists:
+                                                st.warning(f"MRN '{new_mrn_input}' also exists. Choose a different MRN.")
+                                            else:
+                                                st.success(f"✓ MRN '{new_mrn_input}' is available")
+
+                                    # Store choice
+                                    st.session_state.pdf_duplicate_choices[mrn] = {
+                                        'action': 'create_new',
+                                        'new_mrn': new_mrn_input
+                                    }
+                            else:
+                                # Store choice
+                                st.session_state.pdf_duplicate_choices[mrn] = {
+                                    'action': 'add_to_existing',
+                                    'new_mrn': None
+                                }
+
+                            st.divider()
+
+                    st.markdown("---")
 
                 # Show patients grouped by MRN with editable fields using forms
                 for mrn, records in patients.items():
@@ -4695,10 +4842,20 @@ def main():
                     if any(mrn == invalid_mrn[0] for invalid_mrn in invalid_mrns):
                         continue
 
-                    is_existing = mrn in existing_mrns
-                    expander_title = f"📋 Patient: {mrn} - {records[0]['patient_name']} ({len(records)} file(s))"
+                    is_existing = any(mrn == em[0] for em in existing_mrns)
+                    dup_choice = st.session_state.pdf_duplicate_choices.get(mrn, {})
+
+                    # Determine display MRN based on user choice
+                    display_mrn = mrn
+                    if is_existing and dup_choice.get('action') == 'create_new' and dup_choice.get('new_mrn'):
+                        display_mrn = f"{mrn} → {dup_choice.get('new_mrn')}"
+
+                    expander_title = f"📋 Patient: {display_mrn} - {records[0]['patient_name']} ({len(records)} file(s))"
                     if is_existing:
-                        expander_title = f"➕ [ADD TO EXISTING] {expander_title}"
+                        if dup_choice.get('action') == 'add_to_existing':
+                            expander_title = f"➕ [ADD TO EXISTING] {expander_title}"
+                        else:
+                            expander_title = f"🆕 [NEW MRN] {expander_title}"
 
                     with st.expander(expander_title, expanded=True):
                         if is_existing:
@@ -4841,8 +4998,11 @@ def main():
                         config = load_config()
                         edit_data = st.session_state.get('pdf_edit_data', {})
 
+                        # Get duplicate handling choices
+                        dup_choices = st.session_state.get('pdf_duplicate_choices', {})
+
                         for mrn, records in patients.items():
-                            # Validate MRN first
+                            # Validate original MRN first
                             allow_alphanum = config.get('ALLOW_ALPHANUMERIC_MRN', False)
                             is_valid, error_msg = validate_mrn(mrn, allow_alphanumeric=allow_alphanum)
                             if not is_valid:
@@ -4850,8 +5010,33 @@ def main():
                                 st.warning(f"⚠️ Skipped MRN '{mrn}' - {error_msg}")
                                 continue
 
-                            # If patient exists, results will be added to existing patient
-                            # If not, new patient will be created with this MRN
+                            # Check user's choice for handling duplicate MRNs
+                            dup_choice = dup_choices.get(mrn, {})
+                            use_mrn = mrn
+                            allow_dup = True  # Default: allow adding to existing patient
+
+                            if dup_choice.get('action') == 'create_new':
+                                # User wants to create new patient with different MRN
+                                new_mrn = dup_choice.get('new_mrn')
+                                if new_mrn:
+                                    # Validate new MRN
+                                    new_valid, new_err = validate_mrn(new_mrn, allow_alphanumeric=allow_alphanum)
+                                    if not new_valid:
+                                        skipped += len(records)
+                                        st.warning(f"⚠️ Skipped MRN '{mrn}' - New MRN '{new_mrn}' invalid: {new_err}")
+                                        continue
+                                    # Check if new MRN also exists
+                                    new_exists, _ = check_duplicate_patient(new_mrn)
+                                    if new_exists:
+                                        skipped += len(records)
+                                        st.warning(f"⚠️ Skipped MRN '{mrn}' - New MRN '{new_mrn}' already exists")
+                                        continue
+                                    use_mrn = new_mrn
+                                    allow_dup = False  # New patient, don't allow duplicate
+                                else:
+                                    skipped += len(records)
+                                    st.warning(f"⚠️ Skipped MRN '{mrn}' - No new MRN specified")
+                                    continue
 
                             for idx, original_data in enumerate(records, 1):
                                 try:
@@ -4906,7 +5091,7 @@ def main():
 
                                     p_data = {
                                         'name': data.get('patient_name', 'Unknown'),
-                                        'id': mrn,
+                                        'id': use_mrn,  # Use the chosen MRN (original or new)
                                         'age': safe_int(data.get('age'), 30),
                                         'weight': safe_float(data.get('weight'), 65.0),
                                         'height': safe_int(data.get('height'), 165),
@@ -4935,8 +5120,8 @@ def main():
                                         'qs': qs_val, 'unique_rate': uniq_val, 'error_rate': error_val
                                     }
 
-                                    # Use allow_duplicate=False to enforce uniqueness
-                                    rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics, allow_duplicate=False)
+                                    # Use allow_dup based on user's choice for duplicate handling
+                                    rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics, allow_duplicate=allow_dup)
                                     if rid:
                                         success += 1
                                     else:
@@ -4957,13 +5142,13 @@ def main():
                                  st.session_state.user['id'])
 
                         # Clean up session state
-                        for key in ['pdf_import_data', 'pdf_edit_data', 'pdf_import_errors']:
+                        for key in ['pdf_import_data', 'pdf_edit_data', 'pdf_import_errors', 'pdf_duplicate_choices']:
                             if key in st.session_state:
                                 del st.session_state[key]
 
                 with col2:
                     if st.button("❌ Cancel"):
-                        for key in ['pdf_import_data', 'pdf_edit_data', 'pdf_import_errors']:
+                        for key in ['pdf_import_data', 'pdf_edit_data', 'pdf_import_errors', 'pdf_duplicate_choices']:
                             if key in st.session_state:
                                 del st.session_state[key]
                         st.rerun()
