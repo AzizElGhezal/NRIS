@@ -1,9 +1,9 @@
 @echo off
 setlocal EnableDelayedExpansion
-title NRIS v2.2 - Starting...
+title NRIS v2.4 - Starting...
 
 :: ===================================================
-::   NIPT RESULT INTERPRETATION SYSTEM v2.2
+::   NIPT RESULT INTERPRETATION SYSTEM v2.4
 ::   Enhanced Edition - Easy Launch Script
 :: ===================================================
 
