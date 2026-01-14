@@ -308,7 +308,7 @@ TRANSLATIONS = {
         'reviewed_by': 'Revise par:',
         'approved_by': 'Approuve par:',
         'date': 'Date:',
-        'clinical_pathologist': 'Biologiste Medical,
+        'clinical_pathologist': 'Medecin responsable',
         'lab_director': 'Directeur du laboratoire',
         'lab_staff': 'Personnel du laboratoire',
 
