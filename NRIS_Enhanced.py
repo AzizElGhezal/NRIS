@@ -4887,6 +4887,20 @@ def main():
                             # Use form to prevent crashes on edit
                             with st.form(key=f"form_{edit_key}"):
                                 st.markdown("##### Patient Information")
+
+                                # Get previously edited MRN if available, otherwise use original
+                                prev_edit = st.session_state.get('pdf_edit_data', {}).get(edit_key, {})
+                                current_mrn = prev_edit.get('mrn', mrn)
+
+                                # MRN edit row
+                                mrn_col1, mrn_col2 = st.columns([1, 3])
+                                with mrn_col1:
+                                    edit_mrn = st.text_input("MRN", value=current_mrn,
+                                        help="You can modify the MRN here. Leave as-is to use the extracted value.")
+                                with mrn_col2:
+                                    if edit_mrn != mrn:
+                                        st.info(f"📝 MRN will be changed from '{mrn}' to '{edit_mrn}'")
+
                                 p_col1, p_col2, p_col3, p_col4 = st.columns(4)
                                 with p_col1:
                                     edit_name = st.text_input("Name", value=record.get('patient_name', ''))
@@ -4972,6 +4986,8 @@ def main():
                                     if 'pdf_edit_data' not in st.session_state:
                                         st.session_state.pdf_edit_data = {}
                                     st.session_state.pdf_edit_data[edit_key] = {
+                                        'mrn': edit_mrn,  # Store edited MRN
+                                        'original_mrn': mrn,  # Keep track of original for reference
                                         'patient_name': edit_name,
                                         'age': edit_age,
                                         'weeks': edit_weeks,
@@ -4992,7 +5008,10 @@ def main():
                                         'rat_findings': record.get('rat_findings', []),
                                         'source_file': record.get('source_file', '')
                                     }
-                                    st.success(f"✅ Changes saved for {edit_name}")
+                                    if edit_mrn != mrn:
+                                        st.success(f"✅ Changes saved for {edit_name} (MRN changed to: {edit_mrn})")
+                                    else:
+                                        st.success(f"✅ Changes saved for {edit_name}")
 
                             # Show CNV/RAT findings outside form
                             if record.get('cnv_findings') or record.get('rat_findings'):
@@ -5062,6 +5081,21 @@ def main():
                                     edit_key = f"{mrn}_{idx}"
                                     # Use edited data if available, otherwise use original
                                     data = edit_data.get(edit_key, original_data)
+
+                                    # Check if user edited the MRN in the form
+                                    edited_mrn = data.get('mrn', None)
+                                    if edited_mrn and edited_mrn != mrn:
+                                        # User changed MRN in form - validate and use it
+                                        edited_valid, edited_err = validate_mrn(edited_mrn, allow_alphanumeric=allow_alphanum)
+                                        if not edited_valid:
+                                            st.warning(f"⚠️ Skipped record - Edited MRN '{edited_mrn}' invalid: {edited_err}")
+                                            fail += 1
+                                            continue
+                                        # Check if edited MRN exists
+                                        edited_exists, _ = check_duplicate_patient(edited_mrn)
+                                        # Use edited MRN and set allow_dup based on whether it exists
+                                        use_mrn = edited_mrn
+                                        allow_dup = edited_exists  # If exists, add to existing; if not, create new
 
                                     # Get Z-scores
                                     z_scores = data.get('z_scores', {})
