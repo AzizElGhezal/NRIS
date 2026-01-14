@@ -12,21 +12,12 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
 ### Key Features
 
 - **User Authentication & Role-Based Access Control**
-  - Secure login system with SHA256 password hashing and unique salts
   - Role-based permissions (Admin, Geneticist, Technician)
-  - Account lockout protection after failed login attempts
-  - Session timeout for security (60 minutes of inactivity)
-  - Forced password change on first login
-  - Strong password requirements (8+ chars, uppercase, lowercase, numbers)
 
 - **Patient Management**
   - Complete patient demographics and clinical history
   - MRN (Medical Record Number) tracking with uniqueness enforcement
   - BMI calculations and gestational age tracking
-  - Soft delete functionality with automatic MRN release for reuse
-  - Patient data restoration capability
-  - Orphaned patient cleanup utility (soft-deleted and active orphans)
-  - Smart handling of patients with 0 results (automatic replacement)
 
 - **NIPT Result Analysis**
   - Multiple panel types (Basic, Standard, Plus, Pro)
@@ -85,8 +76,8 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
 ## What's New in v2.4
 
 ### Enhanced Analysis Report Display
-- **Comprehensive Post-Analysis View**: After saving and analyzing a sample, the results are now displayed in a well-structured, professional format
-- Complete patient demographics (name, MRN, age, gestational weeks)
+- **Comprehensive Post-Analysis View**: After saving and analyzing a sample, the results are now displayed in a well-structured visual format
+- Complete patient information (name, MRN, age, gestational weeks)
 - QC metrics display with all sequencing parameters (Reads, Cff, GC, QS, Unique %, Error %)
 - Trisomy results with Z-scores in metric cards showing status at a glance
 - Sex chromosome analysis with Z-XX and Z-XY values
@@ -95,12 +86,8 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
 
 ### Registry Improvements
 - **French PDF Quick Access**: Quick actions in Browse & Search now include a language selector (EN/FR) for instant PDF generation
-- **Patient Selection Feedback**: Clear success messages guide users to the Patient Details tab after selecting a patient
-- **Multi-Result PDF Buttons**: Each test result in Patient Details has dedicated English and French PDF download buttons
-- **Selection Banner**: Patient Details tab shows a prominent banner when a patient is already selected
 
 ### User Experience Polish
-- Improved navigation flow between Browse and Patient Details tabs
 - Better visual feedback for all user actions
 - Cleaner layout for multiple test results per patient
 
@@ -149,7 +136,6 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
   - No need to navigate to folders or copy links
   - Choose between normal or silent (minimized console) mode
 - **Auto Browser Open**: Browser automatically opens when server is ready
-  - No more copying localhost links manually
 - **Silent Mode**: Run with minimized console window for cleaner desktop
   - Use `start_NRIS_silent.vbs` directly, or choose option 2 in shortcut creator
 
@@ -207,7 +193,6 @@ NRIS (NIPT Result Interpretation Software) is a comprehensive web-based clinical
 - **Soft Delete**: Deleted patients are marked rather than removed, preventing ghost records
 - **MRN Release on Delete**: Soft-deleted patients have their MRN modified to free it for reuse
 - **Transaction Support**: Import operations use database transactions to prevent partial saves
-- **Enhanced Orphan Cleanup**: Two cleanup options - soft-deleted only or all orphans including active
 
 ### Performance Optimizations
 - **Database Indexes**: Added indexes on frequently queried columns
