@@ -830,7 +830,6 @@ def analyze_trisomy(config: Dict, z_score: float, chrom: str) -> Tuple[str, str]
 
 def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: float) -> Tuple[str, str]:
     """Enhanced SCA analysis.
-
     SCA decision logic:
     - XX/XY: Report Negative
     - XYY/XXY/XXX+XY: Report Positive
@@ -842,7 +841,7 @@ def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: floa
         return "INVALID (Cff < 3.5%)", "INVALID"
 
     threshold = config['CLINICAL_THRESHOLDS']['SCA_THRESHOLD']  # 4.5
-    xy_threshold = 6.0  # Threshold for XO+XY per document
+    xy_threshold = 6.0  # Threshold for XO+XY
 
     if sca_type == "XX": return "Negative (Female)", "LOW"
     if sca_type == "XY": return "Negative (Male)", "LOW"
@@ -853,11 +852,11 @@ def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: floa
     if sca_type == "XXX":
         return ("POSITIVE (Triple X)", "POSITIVE") if z_xx >= threshold else ("Ambiguous XXX -> Re-library", "HIGH")
 
-    # XXX+XY: Always report positive per document
+    # XXX+XY: Always report positive
     if sca_type == "XXX+XY":
         return "POSITIVE (XXX+XY)", "POSITIVE"
 
-    # XO+XY: Check Z-score(XY) >= 6 per document
+    # XO+XY: Check Z-score(XY) >= 6 
     if sca_type == "XO+XY":
         return ("POSITIVE (XO+XY)", "POSITIVE") if z_xy >= xy_threshold else ("Ambiguous XO+XY -> Re-library", "HIGH")
 
