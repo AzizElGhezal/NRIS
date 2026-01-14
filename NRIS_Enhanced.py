@@ -190,7 +190,7 @@ TRANSLATIONS = {
 
         # Footer
         'report_generated': 'Report generated:',
-        'version': 'NRIS v2.2 Enhanced Edition',
+        'version': 'NRIS v2.4 Enhanced Edition',
     },
     'fr': {
         # PDF Header
@@ -308,13 +308,13 @@ TRANSLATIONS = {
         'reviewed_by': 'Revise par:',
         'approved_by': 'Approuve par:',
         'date': 'Date:',
-        'clinical_pathologist': 'Pathologiste clinique',
+        'clinical_pathologist': 'Biologiste Medical,
         'lab_director': 'Directeur du laboratoire',
         'lab_staff': 'Personnel du laboratoire',
 
         # Footer
         'report_generated': 'Rapport genere:',
-        'version': 'NRIS v2.1 Edition Amelioree',
+        'version': 'NRIS v2.4 Edition Amelioree',
     }
 }
 
