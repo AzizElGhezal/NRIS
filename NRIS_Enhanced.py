@@ -67,8 +67,36 @@ DEFAULT_CONFIG = {
         'TRISOMY_LOW': 2.58,
         'TRISOMY_AMBIGUOUS': 6.0,
         'SCA_THRESHOLD': 4.5,
+        'SCA_XY_THRESHOLD': 6.0,
         'RAT_POSITIVE': 8.0,
         'RAT_AMBIGUOUS': 4.5
+    },
+    # Test-specific thresholds for 1st, 2nd, and 3rd tests
+    'TEST_SPECIFIC_THRESHOLDS': {
+        # Trisomy thresholds (chr21/18/13)
+        'TRISOMY': {
+            1: {'low': 2.58, 'ambiguous': 6.0},  # 1st test
+            2: {'low': 2.58, 'medium': 3.0, 'high': 4.0, 'positive': 6.0},  # 2nd test
+            3: {'low': 2.58, 'medium': 3.0, 'high': 4.0, 'positive': 6.0}   # 3rd test (same as 2nd)
+        },
+        # RAT thresholds (Rare Autosomal Trisomy)
+        'RAT': {
+            1: {'low': 4.5, 'positive': 8.0},  # 1st test
+            2: {'low': 4.5, 'positive': 8.0},  # 2nd test
+            3: {'low': 4.5, 'positive': 8.0}   # 3rd test
+        },
+        # SCA thresholds (Sex Chromosome Aneuploidies)
+        'SCA': {
+            1: {'xx_threshold': 4.5, 'xy_threshold': 6.0},  # 1st test
+            2: {'xx_threshold': 4.5, 'xy_threshold': 6.0},  # 2nd test
+            3: {'xx_threshold': 4.5, 'xy_threshold': 6.0}   # 3rd test
+        },
+        # CNV thresholds by size (in Mb)
+        'CNV': {
+            1: {'>= 10': 6.0, '> 7': 8.0, '> 3.5': 10.0, '<= 3.5': 12.0},  # 1st test
+            2: {'>= 10': 6.0, '> 7': 8.0, '> 3.5': 10.0, '<= 3.5': 12.0},  # 2nd test
+            3: {'>= 10': 6.0, '> 7': 8.0, '> 3.5': 10.0, '<= 3.5': 12.0}   # 3rd test
+        }
     },
     'REPORT_LANGUAGE': 'en',  # Default language for PDF reports: 'en' or 'fr'
     'ALLOW_ALPHANUMERIC_MRN': False,  # If True, allows letters/numbers in MRN. If False, only digits.
@@ -92,6 +120,7 @@ TRANSLATIONS = {
         'test_number': 'Test Number:',
         'first_test': '1st Test',
         'second_test': '2nd Test',
+        'third_test': '3rd Test',
 
         # Patient Information
         'patient_info': 'PATIENT INFORMATION',
@@ -219,6 +248,7 @@ TRANSLATIONS = {
         'test_number': 'Numéro de test:',
         'first_test': '1er Test',
         'second_test': '2ème Test',
+        'third_test': '3ème Test',
 
         # Patient Information
         'patient_info': 'INFORMATIONS PATIENTE',
@@ -847,34 +877,40 @@ def analyze_trisomy(config: Dict, z_score: float, chrom: str, test_number: int =
         config: Configuration dictionary with clinical thresholds
         z_score: Z-score value for the chromosome
         chrom: Chromosome identifier (e.g., "21", "18", "13")
-        test_number: 1 for first test, 2 for second test
+        test_number: 1 for first test, 2 for second test, 3 for third test
 
     Returns:
         Tuple of (result_text, risk_level)
     """
-    thresholds = config['CLINICAL_THRESHOLDS']
     if pd.isna(z_score): return "Invalid Data", "UNKNOWN"
+
+    # Get test-specific thresholds if available, otherwise use defaults
+    test_thresholds = config.get('TEST_SPECIFIC_THRESHOLDS', {}).get('TRISOMY', {})
 
     # First test logic
     if test_number == 1:
-        if z_score < thresholds['TRISOMY_LOW']:  # < 2.58
+        t = test_thresholds.get(1, {'low': 2.58, 'ambiguous': 6.0})
+        if z_score < t['low']:
             return "Low Risk", "LOW"
-        if z_score < thresholds['TRISOMY_AMBIGUOUS']:  # < 6.0
+        if z_score < t['ambiguous']:
             return f"High Risk (Z:{z_score:.2f}) -> Re-library", "HIGH"
-        return "POSITIVE", "POSITIVE"  # >= 6.0
+        return "POSITIVE", "POSITIVE"
 
-    # Second test logic (based on GeneMind documentation)
+    # Second and third test logic (based on GeneMind documentation)
     else:
-        if z_score < 2.58:
-            return "Negative (2nd test)", "LOW"
-        elif z_score < 3.0:
+        test_label = "2nd test" if test_number == 2 else "3rd test"
+        t = test_thresholds.get(test_number, {'low': 2.58, 'medium': 3.0, 'high': 4.0, 'positive': 6.0})
+
+        if z_score < t['low']:
+            return f"Negative ({test_label})", "LOW"
+        elif z_score < t.get('medium', 3.0):
             return f"High Risk (Z:{z_score:.2f}) -> Resample for verification", "HIGH"
-        elif z_score < 4.0:
+        elif z_score < t.get('high', 4.0):
             return f"High Risk (Z:{z_score:.2f}) -> Resample for verification", "HIGH"
-        elif z_score < 6.0:
+        elif z_score < t['positive']:
             return f"High Risk (Z:{z_score:.2f}) -> Report Positive if consistent", "HIGH"
-        else:  # >= 6.0
-            return "POSITIVE (2nd test)", "POSITIVE"
+        else:
+            return f"POSITIVE ({test_label})", "POSITIVE"
 
 def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: float, test_number: int = 1) -> Tuple[str, str]:
     """Enhanced SCA (Sex Chromosomal Aneuploidies) analysis.
@@ -885,7 +921,7 @@ def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: floa
         z_xx: Z-score for XX
         z_xy: Z-score for XY
         cff: Cell-free fetal DNA concentration percentage
-        test_number: 1 for first test, 2 for second test
+        test_number: 1 for first test, 2 for second test, 3 for third test
 
     Returns:
         Tuple of (result_text, risk_level)
@@ -898,13 +934,17 @@ def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: floa
     - XXX: If Z-score(XX) >= 4.5, report XXX; else re-library
     - XO+XY: If Z-score(XY) >= 6, report XO+XY; else re-library
 
-    Second test:
+    Second/Third test:
     - Low CFF (<3.5%): Do not refer to first result
     - When CFF >= 3.5%: More stringent interpretation
     """
     min_cff = config['QC_THRESHOLDS']['MIN_CFF']
-    threshold = config['CLINICAL_THRESHOLDS']['SCA_THRESHOLD']  # 4.5
-    xy_threshold = 6.0  # Threshold for XO+XY
+
+    # Get test-specific thresholds if available, otherwise use defaults
+    test_thresholds = config.get('TEST_SPECIFIC_THRESHOLDS', {}).get('SCA', {})
+    t = test_thresholds.get(test_number, {'xx_threshold': 4.5, 'xy_threshold': 6.0})
+    threshold = t['xx_threshold']
+    xy_threshold = t['xy_threshold']
 
     # First test logic
     if test_number == 1:
@@ -931,41 +971,43 @@ def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: floa
 
         return "Ambiguous SCA -> Re-library", "HIGH"
 
-    # Second test logic (based on GeneMind documentation)
+    # Second and third test logic (based on GeneMind documentation)
     else:
+        test_label = "2nd test" if test_number == 2 else "3rd test"
+
         if cff < min_cff:
-            return "INVALID (Cff < 3.5%) -> Do not refer to first result", "INVALID"
+            return f"INVALID (Cff < 3.5%) -> Do not refer to previous result", "INVALID"
 
         # Normal karyotypes
-        if sca_type == "XX": return "Negative (Female, 2nd test)", "LOW"
-        if sca_type == "XY": return "Negative (Male, 2nd test)", "LOW"
+        if sca_type == "XX": return f"Negative (Female, {test_label})", "LOW"
+        if sca_type == "XY": return f"Negative (Male, {test_label})", "LOW"
 
         # Always positive SCAs
         if sca_type in ["XYY", "XXY", "XXX+XY"]:
-            return f"POSITIVE ({sca_type}, 2nd test)", "POSITIVE"
+            return f"POSITIVE ({sca_type}, {test_label})", "POSITIVE"
 
         # XO: Needs verification based on Z-score consistency
         if sca_type == "XO":
             if z_xx >= threshold:
-                return "POSITIVE (Turner XO, 2nd test)", "POSITIVE"
+                return f"POSITIVE (Turner XO, {test_label})", "POSITIVE"
             else:
                 return f"XO (Z:{z_xx:.2f}) -> Resample for verification", "HIGH"
 
         # XXX: Needs verification based on Z-score consistency
         if sca_type == "XXX":
             if z_xx >= threshold:
-                return "POSITIVE (Triple X, 2nd test)", "POSITIVE"
+                return f"POSITIVE (Triple X, {test_label})", "POSITIVE"
             else:
                 return f"XXX (Z:{z_xx:.2f}) -> Resample for verification", "HIGH"
 
         # XO+XY: Needs verification based on Z-score consistency
         if sca_type == "XO+XY":
             if z_xy >= xy_threshold:
-                return "POSITIVE (XO+XY, 2nd test)", "POSITIVE"
+                return f"POSITIVE (XO+XY, {test_label})", "POSITIVE"
             else:
                 return f"XO+XY (Z:{z_xy:.2f}) -> Resample for verification", "HIGH"
 
-        return "Ambiguous SCA -> Resample for verification", "HIGH"
+        return f"Ambiguous SCA -> Resample for verification", "HIGH"
 
 def analyze_rat(config: Dict, chrom: int, z_score: float, test_number: int = 1) -> Tuple[str, str]:
     """RAT (Rare Autosomal Trisomy) analysis.
@@ -974,50 +1016,65 @@ def analyze_rat(config: Dict, chrom: int, z_score: float, test_number: int = 1) 
         config: Configuration dictionary with clinical thresholds
         chrom: Chromosome number
         z_score: Z-score value
-        test_number: 1 for first test, 2 for second test
+        test_number: 1 for first test, 2 for second test, 3 for third test
 
     Returns:
         Tuple of (result_text, risk_level)
     """
-    thresholds = config['CLINICAL_THRESHOLDS']
+    # Get test-specific thresholds if available, otherwise use defaults
+    test_thresholds = config.get('TEST_SPECIFIC_THRESHOLDS', {}).get('RAT', {})
 
     # First test logic
     if test_number == 1:
-        if z_score >= thresholds['RAT_POSITIVE']:  # >= 8.0
+        t = test_thresholds.get(1, {'low': 4.5, 'positive': 8.0})
+        if z_score >= t['positive']:
             return "POSITIVE", "POSITIVE"
-        if z_score > thresholds['RAT_AMBIGUOUS']:  # > 4.5
+        if z_score > t['low']:
             return "Ambiguous -> Re-library", "HIGH"
-        return "Low Risk", "LOW"  # <= 4.5
+        return "Low Risk", "LOW"
 
-    # Second test logic (based on GeneMind documentation)
+    # Second and third test logic (based on GeneMind documentation)
     else:
-        if z_score <= 4.5:
-            return "Negative (2nd test)", "LOW"
-        elif z_score < 8.0:
-            return f"High Risk (Z:{z_score:.2f}) -> Resample for verification", "HIGH"
-        else:  # >= 8.0
-            return "POSITIVE (2nd test)", "POSITIVE"
+        test_label = "2nd test" if test_number == 2 else "3rd test"
+        t = test_thresholds.get(test_number, {'low': 4.5, 'positive': 8.0})
 
-def analyze_cnv(size: float, ratio: float, test_number: int = 1) -> Tuple[str, float, str]:
+        if z_score <= t['low']:
+            return f"Negative ({test_label})", "LOW"
+        elif z_score < t['positive']:
+            return f"High Risk (Z:{z_score:.2f}) -> Resample for verification", "HIGH"
+        else:
+            return f"POSITIVE ({test_label})", "POSITIVE"
+
+def analyze_cnv(size: float, ratio: float, test_number: int = 1, config: Dict = None) -> Tuple[str, float, str]:
     """CNV (Copy Number Variation) analysis.
 
     Args:
         size: Size of CNV in megabases (Mb)
         ratio: Abnormal ratio percentage
-        test_number: 1 for first test, 2 for second test
+        test_number: 1 for first test, 2 for second test, 3 for third test
+        config: Configuration dictionary (optional, for test-specific thresholds)
 
     Returns:
         Tuple of (result_text, threshold, risk_level)
     """
+    # Get test-specific thresholds if available
+    if config:
+        test_thresholds = config.get('TEST_SPECIFIC_THRESHOLDS', {}).get('CNV', {})
+        cnv_thresholds = test_thresholds.get(test_number, {
+            '>= 10': 6.0, '> 7': 8.0, '> 3.5': 10.0, '<= 3.5': 12.0
+        })
+    else:
+        cnv_thresholds = {'>= 10': 6.0, '> 7': 8.0, '> 3.5': 10.0, '<= 3.5': 12.0}
+
     # Determine threshold based on CNV size
     if size >= 10:
-        threshold = 6.0
+        threshold = cnv_thresholds.get('>= 10', 6.0)
     elif size > 7:
-        threshold = 8.0
+        threshold = cnv_thresholds.get('> 7', 8.0)
     elif size > 3.5:
-        threshold = 10.0
+        threshold = cnv_thresholds.get('> 3.5', 10.0)
     else:
-        threshold = 12.0
+        threshold = cnv_thresholds.get('<= 3.5', 12.0)
 
     # First test logic
     if test_number == 1:
@@ -1025,12 +1082,13 @@ def analyze_cnv(size: float, ratio: float, test_number: int = 1) -> Tuple[str, f
             return f"High Risk -> Re-library", threshold, "HIGH"
         return "Low Risk", threshold, "LOW"
 
-    # Second test logic (based on GeneMind documentation)
+    # Second and third test logic (based on GeneMind documentation)
     else:
+        test_label = "2nd test" if test_number == 2 else "3rd test"
         if ratio < threshold:
             return f"High Risk (Ratio:{ratio:.1f}%) -> Resample for verification", threshold, "HIGH"
         else:
-            return f"POSITIVE (Ratio:{ratio:.1f}%, 2nd test)", threshold, "POSITIVE"
+            return f"POSITIVE (Ratio:{ratio:.1f}%, {test_label})", threshold, "POSITIVE"
 
 
 def get_reportable_status(result_text: str, qc_status: str = "PASS", qc_override: bool = False) -> Tuple[str, str]:
@@ -1442,7 +1500,7 @@ def get_result_details(result_id: int) -> Optional[Dict]:
             c.execute("""
                 SELECT id, patient_id, panel_type, qc_status, qc_details, qc_advice,
                        qc_metrics_json, t21_res, t18_res, t13_res, sca_res,
-                       cnv_json, rat_json, full_z_json, final_summary, created_at
+                       cnv_json, rat_json, full_z_json, final_summary, created_at, test_number
                 FROM results
                 WHERE id = ?
             """, (result_id,))
@@ -1464,7 +1522,8 @@ def get_result_details(result_id: int) -> Optional[Dict]:
                     'rat_list': json.loads(row[12]) if row[12] else [],
                     'full_z': json.loads(row[13]) if row[13] else {},
                     'final_summary': row[14],
-                    'created_at': row[15]
+                    'created_at': row[15],
+                    'test_number': row[16] if len(row) > 16 and row[16] is not None else 1
                 }
     except Exception:
         pass
@@ -2584,7 +2643,12 @@ def generate_pdf_report(report_id: int, lang: str = None) -> Optional[bytes]:
 
         # Get test number (default to 1 if not present)
         test_num = row.get('test_number', 1)
-        test_num_label = t('first_test') if test_num == 1 else t('second_test')
+        if test_num == 1:
+            test_num_label = t('first_test')
+        elif test_num == 2:
+            test_num_label = t('second_test')
+        else:
+            test_num_label = t('third_test')
 
         meta_data = [
             [t('report_id'), str(row['id']), t('report_date'), report_date],
@@ -3246,6 +3310,8 @@ def render_test_result_card(result: Dict, show_actions: bool = False, card_key: 
 
     result_id = esc(result.get('id', 'N/A'))
     panel_type = esc(result.get('panel_type', 'N/A'))
+    test_number = result.get('test_number', 1)
+    test_label = f"{'1st' if test_number == 1 else '2nd' if test_number == 2 else '3rd'} Test"
     t21_res = esc(result.get('t21_res', 'N/A'))
     t18_res = esc(result.get('t18_res', 'N/A'))
     t13_res = esc(result.get('t13_res', 'N/A'))
@@ -3255,6 +3321,7 @@ def render_test_result_card(result: Dict, show_actions: bool = False, card_key: 
     qc_color = '#27AE60' if effective_qc == 'PASS' else '#E74C3C' if effective_qc == 'FAIL' else '#F39C12'
     qc_display = effective_qc + ('*' if qc_override else '')
     summary_bg = '#27AE60' if 'NEGATIVE' in final_summary else '#E74C3C' if 'POSITIVE' in final_summary or 'INVALID' in final_summary else '#F39C12'
+    test_color = '#3498DB' if test_number == 1 else '#E67E22' if test_number == 2 else '#E74C3C'
 
     card_html = f'''
     <div style="border: 2px solid {border_color}; border-radius: 10px; padding: 14px; margin: 8px 0; background-color: {bg_color};">
@@ -3262,6 +3329,7 @@ def render_test_result_card(result: Dict, show_actions: bool = False, card_key: 
             <div>
                 <span style="font-weight: bold; font-size: 1.1em;">{status_icon} Result #{result_id}</span>
                 <span style="background: #9B59B6; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 8px;">{panel_type}</span>
+                <span style="background: {test_color}; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 4px;">{test_label}</span>
             </div>
             <div style="color: #7F8C8D; font-size: 0.85em;">{created_at_str}</div>
         </div>
@@ -3922,16 +3990,18 @@ def main():
         with col_test1:
             test_number = st.radio(
                 "Test Number",
-                options=[1, 2],
-                format_func=lambda x: f"{'1st' if x == 1 else '2nd'} Test",
+                options=[1, 2, 3],
+                format_func=lambda x: f"{'1st' if x == 1 else '2nd' if x == 2 else '3rd'} Test",
                 horizontal=True,
-                help="Select whether this is the first test or a second test (re-library/resample)"
+                help="Select test iteration: 1st (initial), 2nd (re-library), or 3rd (final verification)"
             )
         with col_test2:
-            if test_number == 2:
-                st.info("📋 **Second Test**: More stringent interpretation criteria will be applied based on GeneMind guidelines.")
-            else:
+            if test_number == 1:
                 st.info("📋 **First Test**: Standard interpretation criteria will be applied.")
+            elif test_number == 2:
+                st.info("📋 **Second Test**: More stringent interpretation criteria for re-library results.")
+            else:
+                st.info("📋 **Third Test**: Final verification with stringent interpretation criteria.")
 
         panel_type = st.selectbox("Panel Type", list(config['PANEL_READ_LIMITS'].keys()),
                                   help="Select the NIPT panel used for this test")
@@ -4083,7 +4153,7 @@ def main():
             analyzed_cnvs = []
             is_cnv_high = False
             for item in st.session_state.cnv_list:
-                msg, _, risk = analyze_cnv(item['size'], item['ratio'], test_number)
+                msg, _, risk = analyze_cnv(item['size'], item['ratio'], test_number, config)
                 if risk == "HIGH": is_cnv_high = True
                 analyzed_cnvs.append(f"{item['size']}Mb ({item['ratio']}%) -> {msg}")
 
@@ -4513,7 +4583,7 @@ def main():
                             results_query = """
                                 SELECT r.id, r.created_at, r.panel_type, r.qc_status,
                                        r.t21_res, r.t18_res, r.t13_res, r.sca_res, r.final_summary,
-                                       r.qc_override, r.qc_override_reason
+                                       r.qc_override, r.qc_override_reason, r.test_number
                                 FROM results r WHERE r.patient_id = ? ORDER BY r.created_at DESC
                             """
                             patient_results = pd.read_sql(results_query, conn, params=(patient_id,))
@@ -4616,10 +4686,13 @@ def main():
                                                     new_full_z[str(k)] = v
 
                                             if recalc_results:
-                                                t21_res, t21_risk = analyze_trisomy(config, edit_z21, "21")
-                                                t18_res, t18_risk = analyze_trisomy(config, edit_z18, "18")
-                                                t13_res, t13_risk = analyze_trisomy(config, edit_z13, "13")
-                                                sca_res, sca_risk = analyze_sca(config, edit_sca_type, edit_zxx, edit_zxy, edit_cff)
+                                                # Get test_number from result_details (default to 1 for backward compatibility)
+                                                edit_test_num = result_details.get('test_number', 1)
+
+                                                t21_res, t21_risk = analyze_trisomy(config, edit_z21, "21", edit_test_num)
+                                                t18_res, t18_risk = analyze_trisomy(config, edit_z18, "18", edit_test_num)
+                                                t13_res, t13_risk = analyze_trisomy(config, edit_z13, "13", edit_test_num)
+                                                sca_res, sca_risk = analyze_sca(config, edit_sca_type, edit_zxx, edit_zxy, edit_cff, edit_test_num)
 
                                                 analyzed_cnvs, is_cnv_high = [], False
                                                 if edit_cnv.strip():
@@ -4629,7 +4702,7 @@ def main():
                                                             match = re.search(r'([\d.]+)\s*[Mm]b.*?([\d.]+)\s*%', cnv_item)
                                                             if match:
                                                                 sz, rt = float(match.group(1)), float(match.group(2))
-                                                                msg, _, risk = analyze_cnv(sz, rt)
+                                                                msg, _, risk = analyze_cnv(sz, rt, edit_test_num, config)
                                                                 if risk == "HIGH": is_cnv_high = True
                                                                 analyzed_cnvs.append(f"{sz}Mb ({rt}%) -> {msg}")
                                                             else:
@@ -4643,7 +4716,7 @@ def main():
                                                             match = re.search(r'[Cc]hr\s*(\d+).*?[Zz]:\s*([\d.]+)', rat_item)
                                                             if match:
                                                                 r_chr, r_z = int(match.group(1)), float(match.group(2))
-                                                                msg, risk = analyze_rat(config, r_chr, r_z)
+                                                                msg, risk = analyze_rat(config, r_chr, r_z, edit_test_num)
                                                                 if risk in ["POSITIVE", "HIGH"]: is_rat_high = True
                                                                 analyzed_rats.append(f"Chr {r_chr} (Z:{r_z}) -> {msg}")
                                                                 new_full_z[str(r_chr)] = r_z
@@ -5090,14 +5163,14 @@ def main():
                                     panel_idx = panel_options.index(current_panel) if current_panel in panel_options else 1
                                     edit_panel = st.selectbox("Panel", panel_options, index=panel_idx)
                                 with p_col5:
-                                    # Test number selection (1st or 2nd test)
+                                    # Test number selection (1st, 2nd, or 3rd test)
                                     current_test_num = safe_int(record.get('test_number'), 1)
-                                    if current_test_num not in [1, 2]:
+                                    if current_test_num not in [1, 2, 3]:
                                         current_test_num = 1
-                                    edit_test_number = st.selectbox("Test #", options=[1, 2],
-                                        format_func=lambda x: f"{'1st' if x == 1 else '2nd'} Test",
+                                    edit_test_number = st.selectbox("Test #", options=[1, 2, 3],
+                                        format_func=lambda x: f"{'1st' if x == 1 else '2nd' if x == 2 else '3rd'} Test",
                                         index=current_test_num - 1,
-                                        help="Select whether this is the first test or a second test (re-library/resample)")
+                                        help="Select test iteration: 1st (initial), 2nd (re-library), or 3rd (final verification)")
 
                                 m_col1, m_col2, m_col3, m_col4 = st.columns(4)
                                 with m_col1:
@@ -5283,7 +5356,7 @@ def main():
 
                                     # Get test number (default to 1 if not specified)
                                     test_number = safe_int(data.get('test_number'), 1)
-                                    if test_number not in [1, 2]:
+                                    if test_number not in [1, 2, 3]:
                                         test_number = 1  # Default to 1 if invalid value
 
                                     # Get Z-scores
@@ -5304,7 +5377,7 @@ def main():
                                     # Process CNVs and RATs
                                     analyzed_cnvs = []
                                     for cnv in data.get('cnv_findings', []):
-                                        msg, _, _ = analyze_cnv(cnv['size'], cnv['ratio'], test_number)
+                                        msg, _, _ = analyze_cnv(cnv['size'], cnv['ratio'], test_number, config)
                                         analyzed_cnvs.append(f"{cnv['size']}Mb ({cnv['ratio']}%) -> {msg}")
 
                                     analyzed_rats = []
@@ -5461,7 +5534,7 @@ def main():
 
                         # Get test number (default to 1 if not specified)
                         test_number = int(row.get('TestNumber', 1))
-                        if test_number not in [1, 2]:
+                        if test_number not in [1, 2, 3]:
                             test_number = 1  # Default to 1 if invalid value
 
                         p_data = {
@@ -5570,6 +5643,204 @@ def main():
                     st.rerun()
                 else:
                     st.error("Failed to save")
+
+        st.divider()
+
+        st.subheader("Test-Specific Thresholds Configuration")
+        st.markdown("Configure Z-score thresholds for 1st, 2nd, and 3rd tests across all analysis types.")
+
+        with st.expander("🧬 Advanced Threshold Configuration", expanded=False):
+            test_config_tabs = st.tabs(["Trisomy (T21/T18/T13)", "RAT Analysis", "SCA Analysis", "CNV Analysis"])
+
+            # Get current TEST_SPECIFIC_THRESHOLDS from config
+            test_thresholds = config.get('TEST_SPECIFIC_THRESHOLDS', DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'])
+
+            # Tab 1: Trisomy Thresholds
+            with test_config_tabs[0]:
+                st.markdown("**Trisomy Z-Score Thresholds** (Chromosomes 21, 18, 13)")
+
+                with st.form("trisomy_thresholds_form"):
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.markdown("**1st Test**")
+                        t1_low = st.number_input("Low Risk Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['TRISOMY'][1]['low']), key="t1_low")
+                        t1_amb = st.number_input("Ambiguous Threshold", 0.0, 15.0,
+                            value=float(test_thresholds['TRISOMY'][1]['ambiguous']), key="t1_amb")
+
+                    with col2:
+                        st.markdown("**2nd Test**")
+                        t2_low = st.number_input("Low Risk Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['TRISOMY'][2]['low']), key="t2_low")
+                        t2_med = st.number_input("Medium Risk Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['TRISOMY'][2]['medium']), key="t2_med")
+                        t2_high = st.number_input("High Risk Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['TRISOMY'][2]['high']), key="t2_high")
+                        t2_pos = st.number_input("Positive Threshold", 0.0, 15.0,
+                            value=float(test_thresholds['TRISOMY'][2]['positive']), key="t2_pos")
+
+                    with col3:
+                        st.markdown("**3rd Test**")
+                        t3_low = st.number_input("Low Risk Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['TRISOMY'][3]['low']), key="t3_low")
+                        t3_med = st.number_input("Medium Risk Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['TRISOMY'][3]['medium']), key="t3_med")
+                        t3_high = st.number_input("High Risk Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['TRISOMY'][3]['high']), key="t3_high")
+                        t3_pos = st.number_input("Positive Threshold", 0.0, 15.0,
+                            value=float(test_thresholds['TRISOMY'][3]['positive']), key="t3_pos")
+
+                    if st.form_submit_button("💾 Save Trisomy Thresholds"):
+                        new_config = config.copy()
+                        if 'TEST_SPECIFIC_THRESHOLDS' not in new_config:
+                            new_config['TEST_SPECIFIC_THRESHOLDS'] = DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'].copy()
+                        new_config['TEST_SPECIFIC_THRESHOLDS']['TRISOMY'] = {
+                            1: {'low': t1_low, 'ambiguous': t1_amb},
+                            2: {'low': t2_low, 'medium': t2_med, 'high': t2_high, 'positive': t2_pos},
+                            3: {'low': t3_low, 'medium': t3_med, 'high': t3_high, 'positive': t3_pos}
+                        }
+                        if save_config(new_config):
+                            st.success("✅ Trisomy thresholds saved")
+                            log_audit("CONFIG_UPDATE", "Updated trisomy thresholds", st.session_state.user['id'])
+                            st.rerun()
+
+            # Tab 2: RAT Thresholds
+            with test_config_tabs[1]:
+                st.markdown("**RAT (Rare Autosomal Trisomy) Z-Score Thresholds**")
+
+                with st.form("rat_thresholds_form"):
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.markdown("**1st Test**")
+                        r1_low = st.number_input("Low Risk Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['RAT'][1]['low']), key="r1_low")
+                        r1_pos = st.number_input("Positive Threshold", 0.0, 15.0,
+                            value=float(test_thresholds['RAT'][1]['positive']), key="r1_pos")
+
+                    with col2:
+                        st.markdown("**2nd Test**")
+                        r2_low = st.number_input("Low Risk Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['RAT'][2]['low']), key="r2_low")
+                        r2_pos = st.number_input("Positive Threshold", 0.0, 15.0,
+                            value=float(test_thresholds['RAT'][2]['positive']), key="r2_pos")
+
+                    with col3:
+                        st.markdown("**3rd Test**")
+                        r3_low = st.number_input("Low Risk Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['RAT'][3]['low']), key="r3_low")
+                        r3_pos = st.number_input("Positive Threshold", 0.0, 15.0,
+                            value=float(test_thresholds['RAT'][3]['positive']), key="r3_pos")
+
+                    if st.form_submit_button("💾 Save RAT Thresholds"):
+                        new_config = config.copy()
+                        if 'TEST_SPECIFIC_THRESHOLDS' not in new_config:
+                            new_config['TEST_SPECIFIC_THRESHOLDS'] = DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'].copy()
+                        new_config['TEST_SPECIFIC_THRESHOLDS']['RAT'] = {
+                            1: {'low': r1_low, 'positive': r1_pos},
+                            2: {'low': r2_low, 'positive': r2_pos},
+                            3: {'low': r3_low, 'positive': r3_pos}
+                        }
+                        if save_config(new_config):
+                            st.success("✅ RAT thresholds saved")
+                            log_audit("CONFIG_UPDATE", "Updated RAT thresholds", st.session_state.user['id'])
+                            st.rerun()
+
+            # Tab 3: SCA Thresholds
+            with test_config_tabs[2]:
+                st.markdown("**SCA (Sex Chromosomal Aneuploidies) Z-Score Thresholds**")
+
+                with st.form("sca_thresholds_form"):
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.markdown("**1st Test**")
+                        s1_xx = st.number_input("XX Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['SCA'][1]['xx_threshold']), key="s1_xx")
+                        s1_xy = st.number_input("XY Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['SCA'][1]['xy_threshold']), key="s1_xy")
+
+                    with col2:
+                        st.markdown("**2nd Test**")
+                        s2_xx = st.number_input("XX Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['SCA'][2]['xx_threshold']), key="s2_xx")
+                        s2_xy = st.number_input("XY Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['SCA'][2]['xy_threshold']), key="s2_xy")
+
+                    with col3:
+                        st.markdown("**3rd Test**")
+                        s3_xx = st.number_input("XX Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['SCA'][3]['xx_threshold']), key="s3_xx")
+                        s3_xy = st.number_input("XY Threshold", 0.0, 10.0,
+                            value=float(test_thresholds['SCA'][3]['xy_threshold']), key="s3_xy")
+
+                    if st.form_submit_button("💾 Save SCA Thresholds"):
+                        new_config = config.copy()
+                        if 'TEST_SPECIFIC_THRESHOLDS' not in new_config:
+                            new_config['TEST_SPECIFIC_THRESHOLDS'] = DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'].copy()
+                        new_config['TEST_SPECIFIC_THRESHOLDS']['SCA'] = {
+                            1: {'xx_threshold': s1_xx, 'xy_threshold': s1_xy},
+                            2: {'xx_threshold': s2_xx, 'xy_threshold': s2_xy},
+                            3: {'xx_threshold': s3_xx, 'xy_threshold': s3_xy}
+                        }
+                        if save_config(new_config):
+                            st.success("✅ SCA thresholds saved")
+                            log_audit("CONFIG_UPDATE", "Updated SCA thresholds", st.session_state.user['id'])
+                            st.rerun()
+
+            # Tab 4: CNV Thresholds
+            with test_config_tabs[3]:
+                st.markdown("**CNV (Copy Number Variation) Ratio Thresholds by Size**")
+                st.caption("Thresholds are percentage values for abnormal ratio detection")
+
+                with st.form("cnv_thresholds_form"):
+                    st.markdown("**1st Test**")
+                    c1a, c1b, c1c, c1d = st.columns(4)
+                    c1_10 = c1a.number_input("≥10 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][1]['>= 10']), key="c1_10")
+                    c1_7 = c1b.number_input(">7 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][1]['> 7']), key="c1_7")
+                    c1_35 = c1c.number_input(">3.5 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][1]['> 3.5']), key="c1_35")
+                    c1_le = c1d.number_input("≤3.5 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][1]['<= 3.5']), key="c1_le")
+
+                    st.markdown("**2nd Test**")
+                    c2a, c2b, c2c, c2d = st.columns(4)
+                    c2_10 = c2a.number_input("≥10 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][2]['>= 10']), key="c2_10")
+                    c2_7 = c2b.number_input(">7 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][2]['> 7']), key="c2_7")
+                    c2_35 = c2c.number_input(">3.5 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][2]['> 3.5']), key="c2_35")
+                    c2_le = c2d.number_input("≤3.5 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][2]['<= 3.5']), key="c2_le")
+
+                    st.markdown("**3rd Test**")
+                    c3a, c3b, c3c, c3d = st.columns(4)
+                    c3_10 = c3a.number_input("≥10 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][3]['>= 10']), key="c3_10")
+                    c3_7 = c3b.number_input(">7 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][3]['> 7']), key="c3_7")
+                    c3_35 = c3c.number_input(">3.5 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][3]['> 3.5']), key="c3_35")
+                    c3_le = c3d.number_input("≤3.5 Mb (%)", 0.0, 20.0,
+                        value=float(test_thresholds['CNV'][3]['<= 3.5']), key="c3_le")
+
+                    if st.form_submit_button("💾 Save CNV Thresholds"):
+                        new_config = config.copy()
+                        if 'TEST_SPECIFIC_THRESHOLDS' not in new_config:
+                            new_config['TEST_SPECIFIC_THRESHOLDS'] = DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'].copy()
+                        new_config['TEST_SPECIFIC_THRESHOLDS']['CNV'] = {
+                            1: {'>= 10': c1_10, '> 7': c1_7, '> 3.5': c1_35, '<= 3.5': c1_le},
+                            2: {'>= 10': c2_10, '> 7': c2_7, '> 3.5': c2_35, '<= 3.5': c2_le},
+                            3: {'>= 10': c3_10, '> 7': c3_7, '> 3.5': c3_35, '<= 3.5': c3_le}
+                        }
+                        if save_config(new_config):
+                            st.success("✅ CNV thresholds saved")
+                            log_audit("CONFIG_UPDATE", "Updated CNV thresholds", st.session_state.user['id'])
+                            st.rerun()
 
         st.divider()
 
