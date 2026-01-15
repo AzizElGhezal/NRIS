@@ -89,6 +89,9 @@ TRANSLATIONS = {
         'report_date': 'Report Date:',
         'panel_type': 'Panel Type:',
         'report_time': 'Report Time:',
+        'test_number': 'Test Number:',
+        'first_test': '1st Test',
+        'second_test': '2nd Test',
 
         # Patient Information
         'patient_info': 'PATIENT INFORMATION',
@@ -213,6 +216,9 @@ TRANSLATIONS = {
         'report_date': 'Date du rapport:',
         'panel_type': 'Type de panel:',
         'report_time': 'Heure du rapport:',
+        'test_number': 'Numéro de test:',
+        'first_test': '1er Test',
+        'second_test': '2ème Test',
 
         # Patient Information
         'patient_info': 'INFORMATIONS PATIENTE',
@@ -596,6 +602,12 @@ def init_database() -> None:
             except sqlite3.OperationalError:
                 pass  # Column already exists
 
+        # Migration: Add test_number column (1 for first test, 2 for second test)
+        try:
+            c.execute("ALTER TABLE results ADD COLUMN test_number INTEGER DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
         # Migration: Add new user security columns if they don't exist
         for col_sql in [
             "ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0",
@@ -828,71 +840,197 @@ def check_qc_metrics(config: Dict, panel: str, reads: float, cff: float, gc: flo
     
     return status, issues, advice_str
 
-def analyze_trisomy(config: Dict, z_score: float, chrom: str) -> Tuple[str, str]:
-    """Returns (result, risk_level)."""
+def analyze_trisomy(config: Dict, z_score: float, chrom: str, test_number: int = 1) -> Tuple[str, str]:
+    """Returns (result, risk_level).
+
+    Args:
+        config: Configuration dictionary with clinical thresholds
+        z_score: Z-score value for the chromosome
+        chrom: Chromosome identifier (e.g., "21", "18", "13")
+        test_number: 1 for first test, 2 for second test
+
+    Returns:
+        Tuple of (result_text, risk_level)
+    """
     thresholds = config['CLINICAL_THRESHOLDS']
     if pd.isna(z_score): return "Invalid Data", "UNKNOWN"
-    
-    if z_score < thresholds['TRISOMY_LOW']: 
-        return "Low Risk", "LOW"
-    if z_score < thresholds['TRISOMY_AMBIGUOUS']: 
-        return f"High Risk (Z:{z_score:.2f}) -> Re-library", "HIGH"
-    return "POSITIVE", "POSITIVE"
 
-def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: float) -> Tuple[str, str]:
-    """Enhanced SCA analysis.
+    # First test logic
+    if test_number == 1:
+        if z_score < thresholds['TRISOMY_LOW']:  # < 2.58
+            return "Low Risk", "LOW"
+        if z_score < thresholds['TRISOMY_AMBIGUOUS']:  # < 6.0
+            return f"High Risk (Z:{z_score:.2f}) -> Re-library", "HIGH"
+        return "POSITIVE", "POSITIVE"  # >= 6.0
+
+    # Second test logic (based on GeneMind documentation)
+    else:
+        if z_score < 2.58:
+            return "Negative (2nd test)", "LOW"
+        elif z_score < 3.0:
+            return f"High Risk (Z:{z_score:.2f}) -> Resample for verification", "HIGH"
+        elif z_score < 4.0:
+            return f"High Risk (Z:{z_score:.2f}) -> Resample for verification", "HIGH"
+        elif z_score < 6.0:
+            return f"High Risk (Z:{z_score:.2f}) -> Report Positive if consistent", "HIGH"
+        else:  # >= 6.0
+            return "POSITIVE (2nd test)", "POSITIVE"
+
+def analyze_sca(config: Dict, sca_type: str, z_xx: float, z_xy: float, cff: float, test_number: int = 1) -> Tuple[str, str]:
+    """Enhanced SCA (Sex Chromosomal Aneuploidies) analysis.
+
+    Args:
+        config: Configuration dictionary with clinical thresholds
+        sca_type: Type of SCA detected (XX, XY, XO, XXX, XXY, XYY, XXX+XY, XO+XY)
+        z_xx: Z-score for XX
+        z_xy: Z-score for XY
+        cff: Cell-free fetal DNA concentration percentage
+        test_number: 1 for first test, 2 for second test
+
+    Returns:
+        Tuple of (result_text, risk_level)
+
     SCA decision logic:
+    First test:
     - XX/XY: Report Negative
     - XYY/XXY/XXX+XY: Report Positive
     - XO: If Z-score(XX) >= 4.5, report XO; else re-library
     - XXX: If Z-score(XX) >= 4.5, report XXX; else re-library
     - XO+XY: If Z-score(XY) >= 6, report XO+XY; else re-library
-    """
-    if cff < config['QC_THRESHOLDS']['MIN_CFF']:
-        return "INVALID (Cff < 3.5%)", "INVALID"
 
+    Second test:
+    - Low CFF (<3.5%): Do not refer to first result
+    - When CFF >= 3.5%: More stringent interpretation
+    """
+    min_cff = config['QC_THRESHOLDS']['MIN_CFF']
     threshold = config['CLINICAL_THRESHOLDS']['SCA_THRESHOLD']  # 4.5
     xy_threshold = 6.0  # Threshold for XO+XY
 
-    if sca_type == "XX": return "Negative (Female)", "LOW"
-    if sca_type == "XY": return "Negative (Male)", "LOW"
+    # First test logic
+    if test_number == 1:
+        if cff < min_cff:
+            return "INVALID (Cff < 3.5%) -> Resample", "INVALID"
 
-    if sca_type == "XO":
-        return ("POSITIVE (Turner XO)", "POSITIVE") if z_xx >= threshold else ("Ambiguous XO -> Re-library", "HIGH")
+        if sca_type == "XX": return "Negative (Female)", "LOW"
+        if sca_type == "XY": return "Negative (Male)", "LOW"
 
-    if sca_type == "XXX":
-        return ("POSITIVE (Triple X)", "POSITIVE") if z_xx >= threshold else ("Ambiguous XXX -> Re-library", "HIGH")
+        if sca_type == "XO":
+            return ("POSITIVE (Turner XO)", "POSITIVE") if z_xx >= threshold else ("Ambiguous XO -> Re-library", "HIGH")
 
-    # XXX+XY: Always report positive
-    if sca_type == "XXX+XY":
-        return "POSITIVE (XXX+XY)", "POSITIVE"
+        if sca_type == "XXX":
+            return ("POSITIVE (Triple X)", "POSITIVE") if z_xx >= threshold else ("Ambiguous XXX -> Re-library", "HIGH")
 
-    # XO+XY: Check Z-score(XY) >= 6 
-    if sca_type == "XO+XY":
-        return ("POSITIVE (XO+XY)", "POSITIVE") if z_xy >= xy_threshold else ("Ambiguous XO+XY -> Re-library", "HIGH")
+        if sca_type == "XXX+XY":
+            return "POSITIVE (XXX+XY)", "POSITIVE"
 
-    if sca_type in ["XXY", "XYY"]:
-        return f"POSITIVE ({sca_type})", "POSITIVE"
+        if sca_type == "XO+XY":
+            return ("POSITIVE (XO+XY)", "POSITIVE") if z_xy >= xy_threshold else ("Ambiguous XO+XY -> Re-library", "HIGH")
 
-    return "Ambiguous SCA -> Re-library", "HIGH"
+        if sca_type in ["XXY", "XYY"]:
+            return f"POSITIVE ({sca_type})", "POSITIVE"
 
-def analyze_rat(config: Dict, chrom: int, z_score: float) -> Tuple[str, str]:
-    """RAT analysis."""
+        return "Ambiguous SCA -> Re-library", "HIGH"
+
+    # Second test logic (based on GeneMind documentation)
+    else:
+        if cff < min_cff:
+            return "INVALID (Cff < 3.5%) -> Do not refer to first result", "INVALID"
+
+        # Normal karyotypes
+        if sca_type == "XX": return "Negative (Female, 2nd test)", "LOW"
+        if sca_type == "XY": return "Negative (Male, 2nd test)", "LOW"
+
+        # Always positive SCAs
+        if sca_type in ["XYY", "XXY", "XXX+XY"]:
+            return f"POSITIVE ({sca_type}, 2nd test)", "POSITIVE"
+
+        # XO: Needs verification based on Z-score consistency
+        if sca_type == "XO":
+            if z_xx >= threshold:
+                return "POSITIVE (Turner XO, 2nd test)", "POSITIVE"
+            else:
+                return f"XO (Z:{z_xx:.2f}) -> Resample for verification", "HIGH"
+
+        # XXX: Needs verification based on Z-score consistency
+        if sca_type == "XXX":
+            if z_xx >= threshold:
+                return "POSITIVE (Triple X, 2nd test)", "POSITIVE"
+            else:
+                return f"XXX (Z:{z_xx:.2f}) -> Resample for verification", "HIGH"
+
+        # XO+XY: Needs verification based on Z-score consistency
+        if sca_type == "XO+XY":
+            if z_xy >= xy_threshold:
+                return "POSITIVE (XO+XY, 2nd test)", "POSITIVE"
+            else:
+                return f"XO+XY (Z:{z_xy:.2f}) -> Resample for verification", "HIGH"
+
+        return "Ambiguous SCA -> Resample for verification", "HIGH"
+
+def analyze_rat(config: Dict, chrom: int, z_score: float, test_number: int = 1) -> Tuple[str, str]:
+    """RAT (Rare Autosomal Trisomy) analysis.
+
+    Args:
+        config: Configuration dictionary with clinical thresholds
+        chrom: Chromosome number
+        z_score: Z-score value
+        test_number: 1 for first test, 2 for second test
+
+    Returns:
+        Tuple of (result_text, risk_level)
+    """
     thresholds = config['CLINICAL_THRESHOLDS']
-    if z_score >= thresholds['RAT_POSITIVE']: return "POSITIVE", "POSITIVE"
-    if z_score > thresholds['RAT_AMBIGUOUS']: return "Ambiguous -> Re-library", "HIGH"
-    return "Low Risk", "LOW"
 
-def analyze_cnv(size: float, ratio: float) -> Tuple[str, float, str]:
-    """CNV analysis."""
-    if size >= 10: threshold = 6.0
-    elif size > 7: threshold = 8.0
-    elif size > 3.5: threshold = 10.0
-    else: threshold = 12.0
+    # First test logic
+    if test_number == 1:
+        if z_score >= thresholds['RAT_POSITIVE']:  # >= 8.0
+            return "POSITIVE", "POSITIVE"
+        if z_score > thresholds['RAT_AMBIGUOUS']:  # > 4.5
+            return "Ambiguous -> Re-library", "HIGH"
+        return "Low Risk", "LOW"  # <= 4.5
 
-    if ratio >= threshold:
-        return f"High Risk -> Re-library", threshold, "HIGH"
-    return "Low Risk", threshold, "LOW"
+    # Second test logic (based on GeneMind documentation)
+    else:
+        if z_score <= 4.5:
+            return "Negative (2nd test)", "LOW"
+        elif z_score < 8.0:
+            return f"High Risk (Z:{z_score:.2f}) -> Resample for verification", "HIGH"
+        else:  # >= 8.0
+            return "POSITIVE (2nd test)", "POSITIVE"
+
+def analyze_cnv(size: float, ratio: float, test_number: int = 1) -> Tuple[str, float, str]:
+    """CNV (Copy Number Variation) analysis.
+
+    Args:
+        size: Size of CNV in megabases (Mb)
+        ratio: Abnormal ratio percentage
+        test_number: 1 for first test, 2 for second test
+
+    Returns:
+        Tuple of (result_text, threshold, risk_level)
+    """
+    # Determine threshold based on CNV size
+    if size >= 10:
+        threshold = 6.0
+    elif size > 7:
+        threshold = 8.0
+    elif size > 3.5:
+        threshold = 10.0
+    else:
+        threshold = 12.0
+
+    # First test logic
+    if test_number == 1:
+        if ratio >= threshold:
+            return f"High Risk -> Re-library", threshold, "HIGH"
+        return "Low Risk", threshold, "LOW"
+
+    # Second test logic (based on GeneMind documentation)
+    else:
+        if ratio < threshold:
+            return f"High Risk (Ratio:{ratio:.1f}%) -> Resample for verification", threshold, "HIGH"
+        else:
+            return f"POSITIVE (Ratio:{ratio:.1f}%, 2nd test)", threshold, "POSITIVE"
 
 
 def get_reportable_status(result_text: str, qc_status: str = "PASS", qc_override: bool = False) -> Tuple[str, str]:
@@ -1164,8 +1302,21 @@ def delete_patient(patient_id: int, hard_delete: bool = True) -> Tuple[bool, str
 # Removed get_next_patient_id - now using SQLite AUTOINCREMENT for chronological IDs that are never reused
 
 def save_result(patient: Dict, results: Dict, clinical: Dict, full_z: Optional[Dict] = None,
-                qc_metrics: Optional[Dict] = None, allow_duplicate: bool = True) -> Tuple[int, str]:
-    """Save with audit logging and transaction support. Returns (result_id, message)."""
+                qc_metrics: Optional[Dict] = None, allow_duplicate: bool = True, test_number: int = 1) -> Tuple[int, str]:
+    """Save with audit logging and transaction support. Returns (result_id, message).
+
+    Args:
+        patient: Patient information dictionary
+        results: Test results dictionary
+        clinical: Clinical interpretation dictionary
+        full_z: Full Z-scores dictionary (optional)
+        qc_metrics: QC metrics dictionary (optional)
+        allow_duplicate: Allow duplicate patients (default True)
+        test_number: Test number (1 for first test, 2 for second test, default 1)
+
+    Returns:
+        Tuple of (result_id, message)
+    """
     conn = None
     try:
         # Validate MRN format based on config
@@ -1214,22 +1365,22 @@ def save_result(patient: Dict, results: Dict, clinical: Dict, full_z: Optional[D
             INSERT INTO results
             (patient_id, panel_type, qc_status, qc_details, qc_advice, qc_metrics_json,
              t21_res, t18_res, t13_res, sca_res,
-             cnv_json, rat_json, full_z_json, final_summary, created_at, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             cnv_json, rat_json, full_z_json, final_summary, created_at, created_by, test_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             patient_db_id, results['panel'], results['qc_status'],
             str(results['qc_msgs']), results['qc_advice'], qc_metrics_json,
             clinical['t21'], clinical['t18'], clinical['t13'], clinical['sca'],
             json.dumps(clinical['cnv_list']), json.dumps(clinical['rat_list']),
             json.dumps(full_z) if full_z else "{}", clinical['final'],
-            datetime.now().isoformat(), st.session_state.user['id']
+            datetime.now().isoformat(), st.session_state.user['id'], test_number
         ))
         result_id = c.lastrowid
 
         # Commit transaction
         conn.commit()
 
-        log_audit("SAVE_RESULT", f"Created result {result_id} for patient {patient['id']}", st.session_state.user['id'])
+        log_audit("SAVE_RESULT", f"Created result {result_id} for patient {patient['id']} (Test #{test_number})", st.session_state.user['id'])
         return result_id, "Success"
     except Exception as e:
         if conn:
@@ -2375,7 +2526,8 @@ def generate_pdf_report(report_id: int, lang: str = None) -> Optional[bytes]:
                        p.weight_kg, p.height_cm, p.bmi,
                        u.full_name as technician_name,
                        r.qc_override, r.qc_override_reason, r.qc_override_at,
-                       ov_user.full_name as qc_override_by_name
+                       ov_user.full_name as qc_override_by_name,
+                       r.test_number
                 FROM results r
                 JOIN patients p ON p.id = r.patient_id
                 LEFT JOIN users u ON u.id = r.created_by
@@ -2430,9 +2582,14 @@ def generate_pdf_report(report_id: int, lang: str = None) -> Optional[bytes]:
         report_date = row['created_at'][:10] if row['created_at'] else datetime.now().strftime('%Y-%m-%d')
         report_time = row['created_at'][11:19] if len(row['created_at']) > 10 else ''
 
+        # Get test number (default to 1 if not present)
+        test_num = row.get('test_number', 1)
+        test_num_label = t('first_test') if test_num == 1 else t('second_test')
+
         meta_data = [
             [t('report_id'), str(row['id']), t('report_date'), report_date],
             [t('panel_type'), row['panel_type'], t('report_time'), report_time],
+            [t('test_number'), test_num_label, '', ''],
         ]
         meta_table = Table(meta_data, colWidths=[1.1*inch, 2.2*inch, 1.1*inch, 2.1*inch])
         meta_table.setStyle(TableStyle([
@@ -3757,8 +3914,25 @@ def main():
             p_notes = st.text_area("Clinical Notes", height=60, help="Optional notes about the patient or test conditions (e.g., IVF, twins, previous results)")
         
         st.markdown("---")
-        
+
         st.subheader("Sequencing Metrics")
+
+        # Test number selection
+        col_test1, col_test2 = st.columns([1, 2])
+        with col_test1:
+            test_number = st.radio(
+                "Test Number",
+                options=[1, 2],
+                format_func=lambda x: f"{'1st' if x == 1 else '2nd'} Test",
+                horizontal=True,
+                help="Select whether this is the first test or a second test (re-library/resample)"
+            )
+        with col_test2:
+            if test_number == 2:
+                st.info("📋 **Second Test**: More stringent interpretation criteria will be applied based on GeneMind guidelines.")
+            else:
+                st.info("📋 **First Test**: Standard interpretation criteria will be applied.")
+
         panel_type = st.selectbox("Panel Type", list(config['PANEL_READ_LIMITS'].keys()),
                                   help="Select the NIPT panel used for this test")
         m1, m2, m3, m4, m5, m6 = st.columns(6)
@@ -3901,22 +4075,22 @@ def main():
                     save_disabled = True
 
         if st.button("💾 SAVE & ANALYZE", type="primary", disabled=save_disabled):
-            t21_res, t21_risk = analyze_trisomy(config, z21, "21")
-            t18_res, t18_risk = analyze_trisomy(config, z18, "18")
-            t13_res, t13_risk = analyze_trisomy(config, z13, "13")
-            sca_res, sca_risk = analyze_sca(config, sca_type, z_xx, z_xy, cff)
+            t21_res, t21_risk = analyze_trisomy(config, z21, "21", test_number)
+            t18_res, t18_risk = analyze_trisomy(config, z18, "18", test_number)
+            t13_res, t13_risk = analyze_trisomy(config, z13, "13", test_number)
+            sca_res, sca_risk = analyze_sca(config, sca_type, z_xx, z_xy, cff, test_number)
 
             analyzed_cnvs = []
             is_cnv_high = False
             for item in st.session_state.cnv_list:
-                msg, _, risk = analyze_cnv(item['size'], item['ratio'])
+                msg, _, risk = analyze_cnv(item['size'], item['ratio'], test_number)
                 if risk == "HIGH": is_cnv_high = True
                 analyzed_cnvs.append(f"{item['size']}Mb ({item['ratio']}%) -> {msg}")
 
             analyzed_rats = []
             is_rat_high = False
             for item in st.session_state.rat_list:
-                msg, risk = analyze_rat(config, item['chr'], item['z'])
+                msg, risk = analyze_rat(config, item['chr'], item['z'], test_number)
                 if risk in ["POSITIVE", "HIGH"]: is_rat_high = True
                 analyzed_rats.append(f"Chr {item['chr']} (Z:{item['z']}) -> {msg}")
 
@@ -3967,7 +4141,7 @@ def main():
             }
 
             # Save result using user's duplicate handling choice
-            rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics, allow_duplicate=allow_dup)
+            rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics, allow_duplicate=allow_dup, test_number=test_number)
 
             if rid:
                 # Show appropriate success message based on what happened
@@ -4901,7 +5075,7 @@ def main():
                                     if edit_mrn != mrn:
                                         st.info(f"📝 MRN will be changed from '{mrn}' to '{edit_mrn}'")
 
-                                p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+                                p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns(5)
                                 with p_col1:
                                     edit_name = st.text_input("Name", value=record.get('patient_name', ''))
                                 with p_col2:
@@ -4915,6 +5089,15 @@ def main():
                                     current_panel = record.get('panel', 'NIPT Standard')
                                     panel_idx = panel_options.index(current_panel) if current_panel in panel_options else 1
                                     edit_panel = st.selectbox("Panel", panel_options, index=panel_idx)
+                                with p_col5:
+                                    # Test number selection (1st or 2nd test)
+                                    current_test_num = safe_int(record.get('test_number'), 1)
+                                    if current_test_num not in [1, 2]:
+                                        current_test_num = 1
+                                    edit_test_number = st.selectbox("Test #", options=[1, 2],
+                                        format_func=lambda x: f"{'1st' if x == 1 else '2nd'} Test",
+                                        index=current_test_num - 1,
+                                        help="Select whether this is the first test or a second test (re-library/resample)")
 
                                 m_col1, m_col2, m_col3, m_col4 = st.columns(4)
                                 with m_col1:
@@ -4992,6 +5175,7 @@ def main():
                                         'age': edit_age,
                                         'weeks': edit_weeks,
                                         'panel': edit_panel,
+                                        'test_number': edit_test_number,  # Store test number
                                         'weight': edit_weight,
                                         'height': edit_height,
                                         'bmi': edit_bmi,
@@ -5097,6 +5281,11 @@ def main():
                                         use_mrn = edited_mrn
                                         allow_dup = edited_exists  # If exists, add to existing; if not, create new
 
+                                    # Get test number (default to 1 if not specified)
+                                    test_number = safe_int(data.get('test_number'), 1)
+                                    if test_number not in [1, 2]:
+                                        test_number = 1  # Default to 1 if invalid value
+
                                     # Get Z-scores
                                     z_scores = data.get('z_scores', {})
                                     z_21 = safe_float(z_scores.get(21, z_scores.get('21', 0.0)))
@@ -5106,21 +5295,21 @@ def main():
                                     z_xy = safe_float(z_scores.get('XY', 0.0))
 
                                     # Analyze
-                                    t21, _ = analyze_trisomy(config, z_21, "21")
-                                    t18, _ = analyze_trisomy(config, z_18, "18")
-                                    t13, _ = analyze_trisomy(config, z_13, "13")
+                                    t21, _ = analyze_trisomy(config, z_21, "21", test_number)
+                                    t18, _ = analyze_trisomy(config, z_18, "18", test_number)
+                                    t13, _ = analyze_trisomy(config, z_13, "13", test_number)
                                     cff_val = safe_float(data.get('cff'), 10.0)
-                                    sca, _ = analyze_sca(config, data.get('sca_type', 'XX'), z_xx, z_xy, cff_val)
+                                    sca, _ = analyze_sca(config, data.get('sca_type', 'XX'), z_xx, z_xy, cff_val, test_number)
 
                                     # Process CNVs and RATs
                                     analyzed_cnvs = []
                                     for cnv in data.get('cnv_findings', []):
-                                        msg, _, _ = analyze_cnv(cnv['size'], cnv['ratio'])
+                                        msg, _, _ = analyze_cnv(cnv['size'], cnv['ratio'], test_number)
                                         analyzed_cnvs.append(f"{cnv['size']}Mb ({cnv['ratio']}%) -> {msg}")
 
                                     analyzed_rats = []
                                     for rat in data.get('rat_findings', []):
-                                        msg, _ = analyze_rat(config, rat['chr'], rat['z'])
+                                        msg, _ = analyze_rat(config, rat['chr'], rat['z'], test_number)
                                         analyzed_rats.append(f"Chr {rat['chr']} (Z:{rat['z']}) -> {msg}")
 
                                     # Run QC
@@ -5174,7 +5363,7 @@ def main():
                                     }
 
                                     # Use allow_dup based on user's choice for duplicate handling
-                                    rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics, allow_duplicate=allow_dup)
+                                    rid, msg = save_result(p_data, r_data, c_data, full_z, qc_metrics=qc_metrics, allow_duplicate=allow_dup, test_number=test_number)
                                     if rid:
                                         success += 1
                                     else:
@@ -5238,9 +5427,10 @@ def main():
         else:
             st.subheader("Import from CSV/Excel Template")
         template = {
-            'Patient Name': ['Example'], 'MRN': ['12345'], 'Age': [30], 
+            'Patient Name': ['Example'], 'MRN': ['12345'], 'Age': [30],
             'Weight': [65], 'Height': [165], 'Weeks': [12], 'Panel': ['NIPT Standard'],
-            'Reads': [10.5], 'Cff': [12.0], 'GC': [41.0], 'QS': [1.2], 
+            'TestNumber': [1],
+            'Reads': [10.5], 'Cff': [12.0], 'GC': [41.0], 'QS': [1.2],
             'Unique': [80.0], 'Error': [0.2],
             'SCA Type': ['XX'], 'Z-XX': [0.0], 'Z-XY': [0.0]
         }
@@ -5268,28 +5458,33 @@ def main():
                 for idx, row in df_in.iterrows():
                     try:
                         status.text(f"Processing {idx+1}/{len(df_in)}")
-                        
+
+                        # Get test number (default to 1 if not specified)
+                        test_number = int(row.get('TestNumber', 1))
+                        if test_number not in [1, 2]:
+                            test_number = 1  # Default to 1 if invalid value
+
                         p_data = {
-                            'name': row.get('Patient Name'), 'id': str(row.get('MRN')), 
-                            'age': row.get('Age'), 'weight': row.get('Weight'), 
-                            'height': row.get('Height'), 'bmi': 0, 
+                            'name': row.get('Patient Name'), 'id': str(row.get('MRN')),
+                            'age': row.get('Age'), 'weight': row.get('Weight'),
+                            'height': row.get('Height'), 'bmi': 0,
                             'weeks': row.get('Weeks'), 'notes': ''
                         }
-                        
+
                         z_map = {i: row.get(f'Z-{i}', 0.0) for i in range(1, 23)}
                         z_map['XX'] = row.get('Z-XX', 0.0)
                         z_map['XY'] = row.get('Z-XY', 0.0)
 
-                        t21, _ = analyze_trisomy(config, z_map[21], "21")
-                        t18, _ = analyze_trisomy(config, z_map[18], "18")
-                        t13, _ = analyze_trisomy(config, z_map[13], "13")
-                        sca, _ = analyze_sca(config, row.get('SCA Type', 'XX'), 
-                                           z_map['XX'], z_map['XY'], row.get('Cff', 10))
+                        t21, _ = analyze_trisomy(config, z_map[21], "21", test_number)
+                        t18, _ = analyze_trisomy(config, z_map[18], "18", test_number)
+                        t13, _ = analyze_trisomy(config, z_map[13], "13", test_number)
+                        sca, _ = analyze_sca(config, row.get('SCA Type', 'XX'),
+                                           z_map['XX'], z_map['XY'], row.get('Cff', 10), test_number)
 
                         rats = []
                         for ch, z in z_map.items():
                             if isinstance(ch, int) and ch not in [13, 18, 21]:
-                                msg, _ = analyze_rat(config, ch, z)
+                                msg, _ = analyze_rat(config, ch, z, test_number)
                                 if "POSITIVE" in msg or "Ambiguous" in msg:
                                     rats.append(f"Chr {ch} (Z:{z}) -> {msg}")
 
@@ -5303,12 +5498,12 @@ def main():
                         if "POSITIVE" in (t21 + t18 + t13 + sca): final = "POSITIVE"
                         if qc_s == "FAIL": final = "INVALID"
 
-                        save_result(p_data, 
-                                   {'panel': row.get('Panel'), 'qc_status': qc_s, 
+                        save_result(p_data,
+                                   {'panel': row.get('Panel'), 'qc_status': qc_s,
                                     'qc_msgs': qc_m, 'qc_advice': qc_a},
-                                   {'t21': t21, 't18': t18, 't13': t13, 'sca': sca, 
+                                   {'t21': t21, 't18': t18, 't13': t13, 'sca': sca,
                                     'cnv_list': [], 'rat_list': rats, 'final': final},
-                                   full_z=z_map)
+                                   full_z=z_map, test_number=test_number)
                         success += 1
                     except:
                         fail += 1
