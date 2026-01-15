@@ -87,6 +87,43 @@ Restart the application after editing.
 
 ---
 
+## Customizing PDF Reports
+
+### Report Language
+
+Set default language in **Settings** tab, or select per-report in Analysis/Registry tabs. Options: English (`en`) or French (`fr`).
+
+### Laboratory Name
+
+In `NRIS_Enhanced.py`, find the PDF header section (~line 2430):
+
+```python
+lab_name = "Your Genetics Laboratory"  # Modify this
+pdf.drawCentredString(width / 2, height - 50, lab_name)
+```
+
+### Adding a Logo
+
+After the header section, add:
+
+```python
+from reportlab.lib.utils import ImageReader
+
+logo = ImageReader("lab_logo.png")
+pdf.drawImage(logo, 50, height - 80, width=100, height=50, preserveAspectRatio=True)
+```
+
+### Modifying Footer
+
+Find the footer section (~line 2820):
+
+```python
+footer_text = "Confidential - Medical use only"
+pdf.drawCentredString(width / 2, 30, footer_text)
+```
+
+---
+
 ## Data Encryption
 
 NRIS does not encrypt data by default. Options for adding encryption:
