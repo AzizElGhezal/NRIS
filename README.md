@@ -65,20 +65,6 @@ QC and clinical thresholds can be customized in the Settings tab:
 | Unique Read Rate | 68%+ |
 | Trisomy Low Risk | <2.58 |
 | Trisomy High Risk | >6.0 |
-| Session Timeout | 60 min |
-| Account Lockout | 5 attempts |
-
----
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Won't start | Ensure Python 3.8+ is installed and in PATH |
-| Database errors | Check write permissions; delete `nipt_registry_v2.db` to reset |
-| PDF extraction issues | PDFs must be text-based, not scanned images |
-| Account locked | Wait 15 minutes |
-| Browser won't open | Navigate to `http://localhost:8501` manually |
 
 ---
 
