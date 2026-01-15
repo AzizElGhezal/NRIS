@@ -1,72 +1,65 @@
 # NRIS - NIPT Result Interpretation Software
 
-**Version 2.4**
+![Version](https://img.shields.io/badge/version-2.4-blue) ![Python](https://img.shields.io/badge/python-3.8+-green) ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
-A clinical genetics dashboard for managing and interpreting Non-Invasive Prenatal Testing (NIPT) results.
-
----
+A clinical genetics dashboard for Non-Invasive Prenatal Testing (NIPT) result management, quality control, and reporting. Designed for genetics laboratories and prenatal diagnosis centers.
 
 ## Features
 
-- **User Authentication** - Role-based access control (Admin, Geneticist, Technician)
-- **Patient Management** - Demographics, MRN tracking, BMI and gestational age
-- **NIPT Analysis** - Multiple panels, QC validation, trisomy risk assessment, SCA detection, RAT analysis
-- **PDF Import** - Extract data from PDF reports with confidence scoring
-- **Bilingual Reports** - Generate clinical PDF reports in English or French
-- **Analytics** - Interactive dashboards, QC trends, result distributions
-- **Data Protection** - Automatic backups, crash resilience, integrity verification
-- **Audit Trail** - Complete activity logging for compliance
+**Analysis & Detection**
+- Trisomy screening (T21, T18, T13) with Z-score interpretation
+- Sex chromosome aneuploidy (SCA) detection
+- Rare autosomal trisomy (RAT) and copy number variation (CNV) analysis
+- Multi-panel support (Basic, Standard, Plus, Pro) with test-specific thresholds
 
----
+**Clinical Workflow**
+- Patient registry with demographics and test history
+- Automatic PDF data extraction with confidence scoring
+- Batch import for high-throughput processing
+- Bilingual PDF reports (English/French)
+
+**Quality & Compliance**
+- Multi-metric QC validation (CFF, GC content, read rates)
+- Role-based access (Admin, Geneticist, Technician)
+- Complete audit trail for regulatory compliance
+- Automatic backups with integrity verification
+
+## Requirements
+
+- Python 3.8+
+- Dependencies: Streamlit, Pandas, Plotly, ReportLab, PyPDF2
 
 ## Quick Start
 
-### Windows (Recommended)
+**Windows:** Double-click `start_NRIS_v2.bat` — browser opens automatically.
 
-1. Clone or download this repository
-2. Double-click `start_NRIS_v2.bat`
-3. Browser opens automatically to `http://localhost:8501`
-
-Optional: Run `create_desktop_shortcut.bat` for one-click access.
-
-### Manual Installation
-
+**Manual Installation:**
 ```bash
 git clone https://github.com/AzizElGhezal/NRIS.git
 cd NRIS
 python -m venv venv_NRIS_v2
-# Windows: venv_NRIS_v2\Scripts\activate
-# macOS/Linux: source venv_NRIS_v2/bin/activate
+source venv_NRIS_v2/bin/activate  # Windows: venv_NRIS_v2\Scripts\activate
 pip install -r requirements_NRIS_v2.txt
 streamlit run NRIS_Enhanced.py
 ```
 
----
-
-## Default Login
-
-```
-Username: admin
-Password: admin123
-```
-
-You must change the password on first login (8+ chars, uppercase, lowercase, number).
-
----
+**Default login:** `admin` / `admin123` (password change required on first login)
 
 ## Configuration
 
-QC and clinical thresholds can be customized in the Settings tab:
+All thresholds are configurable via the **Settings** tab without code changes:
 
-| Setting | Default |
-|---------|---------|
-| CFF Minimum | 3.5% |
-| GC Content | 37-44% |
-| Unique Read Rate | 68%+ |
-| Trisomy Low Risk | <2.58 |
-| Trisomy High Risk | >6.0 |
+| Category | Parameters |
+|----------|------------|
+| QC Thresholds | CFF range, GC content, unique read rate, error rate |
+| Clinical Thresholds | Trisomy risk cutoffs, SCA thresholds, CNV size limits |
+| Report Settings | Default language, MRN format validation |
 
----
+For advanced customization (PDF patterns, encryption, branding), see [CUSTOMIZATION_GUIDE.md](CUSTOMIZATION_GUIDE.md).
+
+## Documentation
+
+- **[CUSTOMIZATION_GUIDE.md](CUSTOMIZATION_GUIDE.md)** - PDF patterns, encryption options, report customization
 
 ## Author
 
@@ -74,4 +67,4 @@ QC and clinical thresholds can be customized in the Settings tab:
 
 ## Disclaimer
 
-This software assists healthcare professionals in interpreting NIPT results. Clinical decisions should be made by qualified medical professionals. This tool does not replace professional medical judgment.
+For clinical decision support only. Results must be interpreted by qualified healthcare professionals. Does not replace professional medical judgment.
