@@ -11,18 +11,13 @@ A clinical genetics dashboard for Non-Invasive Prenatal Testing (NIPT) result ma
 - Sex chromosome aneuploidy (SCA) detection
 - Rare autosomal trisomy (RAT) and copy number variation (CNV) analysis
 - Multi-panel support (Basic, Standard, Plus, Pro) with test-specific thresholds
+- Multi-metric QC validation (CFF, GC content, read rates)
 
 **Clinical Workflow**
 - Patient registry with demographics and test history
 - Automatic PDF data extraction with confidence scoring
 - Batch import for high-throughput processing
 - Bilingual PDF reports (English/French)
-
-**Quality & Compliance**
-- Multi-metric QC validation (CFF, GC content, read rates)
-- Role-based access (Admin, Geneticist, Technician)
-- Complete audit trail for regulatory compliance
-- Automatic backups with integrity verification
 
 ## Requirements
 
