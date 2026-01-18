@@ -19,6 +19,12 @@ A clinical genetics dashboard for Non-Invasive Prenatal Testing (NIPT) result ma
 - Batch import for high-throughput processing
 - Bilingual PDF reports (English/French)
 
+**Technical**
+- Modular architecture with comprehensive test coverage (220+ tests)
+- Pluggable encryption framework for sensitive data
+- Database migrations for safe schema updates
+- Performance caching for analytics
+
 ## Requirements
 
 - Python 3.8+
@@ -50,11 +56,11 @@ All thresholds are configurable via the **Settings** tab without code changes:
 | Clinical Thresholds | Trisomy risk cutoffs, SCA thresholds, CNV size limits |
 | Report Settings | Default language, MRN format validation |
 
-For advanced customization (PDF patterns, encryption, branding), see [CUSTOMIZATION_GUIDE.md](CUSTOMIZATION_GUIDE.md).
+For advanced customization (encryption, migrations, performance), see [CUSTOMIZATION_GUIDE.md](CUSTOMIZATION_GUIDE.md).
 
 ## Documentation
 
-- **[CUSTOMIZATION_GUIDE.md](CUSTOMIZATION_GUIDE.md)** - PDF patterns, encryption options, report customization
+- **[CUSTOMIZATION_GUIDE.md](CUSTOMIZATION_GUIDE.md)** - Encryption, migrations, caching, PDF patterns
 
 ## Author
 

@@ -7,161 +7,198 @@
 ## Overview
 
 This guide covers customizing NRIS for your laboratory's needs:
-- PDF import patterns for different report formats
-- Clinical parameter configuration
-- Data encryption options
-- Backup procedures
+- Data encryption and security
+- Database migrations
+- Performance optimization
+- PDF import patterns
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
 | `NRIS_Enhanced.py` | Main application |
+| `nris/` | Modular package |
 | `nris_config.json` | Custom configuration |
-| `nipt_registry_v2.db` | SQLite database |
 
 ---
 
-## PDF Import Customization
+## Data Encryption
 
-The system uses regex patterns to extract data from PDFs. To support new report formats, add patterns to `extract_data_from_pdf()` in `NRIS_Enhanced.py`.
+NRIS provides a pluggable encryption framework. Choose your preferred backend:
 
-### Adding a Pattern
-
-Find the relevant pattern list and add your format:
+### Option 1: Fernet Encryption (Built-in)
 
 ```python
-# Example: Adding support for "File No." as MRN
-mrn_patterns = [
-    r'(?:MRN|Medical\s+Record)[:\s]+([A-Za-z0-9\-]+)',
-    r'File\s+No\.[:\s]+([A-Za-z0-9\-]+)',  # Add new pattern
-]
+from nris.encryption import get_encryptor, generate_key
+
+# Generate and save key securely
+key = generate_key()
+print(f"Save this key: {key}")
+
+# Use encryption
+enc = get_encryptor('fernet', key=key)
+encrypted = enc.encrypt("patient name")
+decrypted = enc.decrypt(encrypted)
 ```
 
-### Common Pattern Locations
+### Option 2: Field-Level Encryption
 
-| Field | Search for |
-|-------|------------|
-| Patient name | `name_patterns` |
-| MRN/ID | `mrn_patterns` |
-| Age | `age_patterns` |
-| Z-scores | `z21_patterns`, `z18_patterns`, `z13_patterns` |
+```python
+from nris.encryption import FieldEncryptor, FernetEncryption
 
-### Scanned PDFs
-
-For image-based PDFs, install OCR support:
-```bash
-pip install pytesseract pillow pdf2image
+encryptor = FieldEncryptor(
+    FernetEncryption(key),
+    encrypted_fields={'full_name', 'mrn_id', 'clinical_notes'}
+)
+encrypted_patient = encryptor.encrypt_dict(patient_data)
 ```
+
+### Option 3: Custom Backend
+
+```python
+from nris.encryption import register_backend
+
+class MyEncryption:
+    def encrypt(self, plaintext: str) -> str: ...
+    def decrypt(self, ciphertext: str) -> str: ...
+    def is_encrypted(self, data: str) -> bool: ...
+
+register_backend('custom', MyEncryption)
+```
+
+Store keys in environment variables: `export NRIS_ENCRYPTION_KEY="your-key"`
+
+---
+
+## Database Migrations
+
+Safe schema updates with version tracking:
+
+```python
+from nris.migrations import MigrationManager
+
+manager = MigrationManager()
+manager.migrate()  # Apply pending migrations
+
+# Check status
+status = manager.get_status()
+print(f"Version: {status['current_version']}")
+print(f"Pending: {status['pending_count']}")
+
+# Rollback if needed
+manager.rollback(steps=1)
+```
+
+### Custom Migrations
+
+```python
+from nris.migrations import Migration, MigrationManager
+
+manager = MigrationManager()
+manager.register(Migration(
+    version="100",
+    description="Add custom column",
+    up=["ALTER TABLE patients ADD COLUMN custom_field TEXT"],
+    down=[]
+))
+manager.migrate()
+```
+
+---
+
+## Performance Caching
+
+Improve analytics performance with built-in caching:
+
+```python
+from nris.cache import cached, get_cache
+
+# Decorator for automatic caching
+@cached(ttl=300, persist=True)
+def compute_statistics():
+    # Expensive computation
+    return stats
+
+# Manual cache operations
+cache = get_cache()
+cache.set('key', data, ttl=600, persist=True)
+data = cache.get('key')
+cache.invalidate_pattern('analytics_')
+```
+
+Cache is two-tier: in-memory LRU + SQLite persistence.
 
 ---
 
 ## Configuration
 
-### Method 1: Settings Tab (Recommended)
+### Settings Tab (Recommended)
 
-Log in as admin and modify values in **Settings** tab. Changes save automatically to `nris_config.json`.
+Log in as admin, modify values in **Settings** tab. Saves to `nris_config.json`.
 
-### Method 2: Edit Config File
-
-Edit `nris_config.json` directly:
+### Direct Edit
 
 ```json
 {
   "QC_THRESHOLDS": {
     "MIN_CFF": 3.5,
-    "GC_RANGE": [37.0, 44.0],
-    "MIN_UNIQ_RATE": 68.0,
-    "MAX_ERROR_RATE": 1.0
+    "GC_RANGE": [37.0, 44.0]
   },
   "CLINICAL_THRESHOLDS": {
     "TRISOMY_LOW": 2.58,
-    "TRISOMY_AMBIGUOUS": 6.0,
     "SCA_THRESHOLD": 4.5
   },
   "REPORT_LANGUAGE": "en"
 }
 ```
 
-Restart the application after editing.
-
 ---
 
-## Customizing PDF Reports
+## PDF Import Patterns
 
-### Report Language
-
-Set default language in **Settings** tab, or select per-report in Analysis/Registry tabs. Options: English (`en`) or French (`fr`).
-
-### Laboratory Name
-
-In `NRIS_Enhanced.py`, find the PDF header section (~line 2430):
+Add patterns to `nris/pdf/extraction.py`:
 
 ```python
-lab_name = "Your Genetics Laboratory"  # Modify this
-pdf.drawCentredString(width / 2, height - 50, lab_name)
+mrn_patterns = [
+    r'(?:MRN|Medical\s+Record)[:\s]+([A-Za-z0-9\-]+)',
+    r'File\s+No\.[:\s]+([A-Za-z0-9\-]+)',  # New format
+]
 ```
 
-### Adding a Logo
-
-After the header section, add:
-
-```python
-from reportlab.lib.utils import ImageReader
-
-logo = ImageReader("lab_logo.png")
-pdf.drawImage(logo, 50, height - 80, width=100, height=50, preserveAspectRatio=True)
-```
-
-### Modifying Footer
-
-Find the footer section (~line 2820):
-
-```python
-footer_text = "Confidential - Medical use only"
-pdf.drawCentredString(width / 2, 30, footer_text)
-```
-
----
-
-## Data Encryption
-
-NRIS does not encrypt data by default. Options for adding encryption:
-
-| Approach | Description |
-|----------|-------------|
-| Column-level | Encrypt sensitive fields (name, MRN) using `cryptography` library |
-| SQLCipher | Full database encryption via SQLCipher extension |
-| Disk encryption | OS-level encryption (BitLocker, FileVault, LUKS) |
-
-For column-level encryption:
-```bash
-pip install cryptography
-```
-
-Store encryption keys in environment variables, not in code.
+| Field | Variable |
+|-------|----------|
+| Patient name | `name_patterns` |
+| MRN/ID | `mrn_patterns` |
+| Z-scores | `z21_patterns` |
 
 ---
 
 ## Backup
 
+### Programmatic Backup
+
+```python
+from nris.backup import create_backup, list_backups, restore_backup
+
+create_backup("manual")
+backups = list_backups()
+restore_backup(backups[0]['path'])
+```
+
 ### Files to Back Up
 
 - `nipt_registry_v2.db` - Database
 - `nris_config.json` - Configuration
-- `backups/` - Automatic backups
 
-### Quick Backup
+---
 
-```bash
-tar czf nris_backup_$(date +%Y%m%d).tar.gz nipt_registry_v2.db nris_config.json backups/
-```
+## Type Checking
 
-### Restore
+Run mypy for type validation:
 
 ```bash
-tar xzf nris_backup_20260114.tar.gz
-streamlit run NRIS_Enhanced.py
+pip install mypy
+mypy nris/
 ```
 
 ---
@@ -170,32 +207,10 @@ streamlit run NRIS_Enhanced.py
 
 | Issue | Solution |
 |-------|----------|
-| No data extracted from PDF | Check if PDF is text-based (not scanned); add regex patterns for your format |
-| Config not applied | Verify JSON syntax; restart application |
-| Decryption failed | Check `NRIS_MASTER_KEY` environment variable |
-| Slow after encryption | Use column-level encryption only for sensitive fields |
-
-### Debug Logging
-
-Add to `NRIS_Enhanced.py`:
-```python
-import logging
-logging.basicConfig(filename='nris_debug.log', level=logging.DEBUG)
-```
-
----
-
-## Common Regex Patterns
-
-```python
-r'MRN[:\s]+(\d{7})'              # Medical record number
-r'(\d{2}/\d{2}/\d{4})'           # Date DD/MM/YYYY
-r'Z[:\s]*=?\s*(-?\d+\.?\d+)'     # Z-score
-r'(\d+\.?\d*)\s*%'               # Percentage
-r'Age[:\s]+(\d+)'                # Age
-```
-
-Test patterns at [regex101.com](https://regex101.com).
+| Migration failed | Check `manager.get_status()` for details |
+| Cache not working | Verify `_analytics_cache` table exists |
+| Encryption error | Check key format (base64, 32 bytes) |
+| Type errors | Run `mypy nris/` for diagnostics |
 
 ---
 
