@@ -23,6 +23,7 @@ import secrets
 import re
 import shutil
 import os
+import copy
 import html as html_module
 from datetime import datetime, timedelta
 from typing import Tuple, List, Dict, Any, Optional
@@ -808,7 +809,7 @@ def load_config() -> Dict:
         with open(CONFIG_FILE, 'r') as f:
             return json.load(f)
     except:
-        return DEFAULT_CONFIG.copy()
+        return copy.deepcopy(DEFAULT_CONFIG)
 
 def save_config(config: Dict) -> bool:
     """Save configuration to file."""
@@ -1085,10 +1086,10 @@ def analyze_cnv(size: float, ratio: float, test_number: int = 1, config: Dict = 
     # Second and third test logic (based on GeneMind documentation)
     else:
         test_label = "2nd test" if test_number == 2 else "3rd test"
-        if ratio < threshold:
-            return f"High Risk (Ratio:{ratio:.1f}%) -> Resample for verification", threshold, "HIGH"
-        else:
+        if ratio >= threshold:
             return f"POSITIVE (Ratio:{ratio:.1f}%, {test_label})", threshold, "POSITIVE"
+        else:
+            return f"High Risk (Ratio:{ratio:.1f}%) -> Resample for verification", threshold, "HIGH"
 
 
 def get_reportable_status(result_text: str, qc_status: str = "PASS", qc_override: bool = False) -> Tuple[str, str]:
@@ -5624,7 +5625,7 @@ def main():
                                       config['CLINICAL_THRESHOLDS']['RAT_POSITIVE'])
             
             if st.form_submit_button("💾 Save Configuration"):
-                new_config = DEFAULT_CONFIG.copy()
+                new_config = copy.deepcopy(config)
                 new_config['QC_THRESHOLDS']['MIN_CFF'] = new_cff
                 new_config['QC_THRESHOLDS']['GC_RANGE'] = [gc_min, gc_max]
                 new_config['PANEL_READ_LIMITS'] = {
@@ -5692,9 +5693,9 @@ def main():
                             value=float(test_thresholds['TRISOMY'][3]['positive']), key="t3_pos")
 
                     if st.form_submit_button("💾 Save Trisomy Thresholds"):
-                        new_config = config.copy()
+                        new_config = copy.deepcopy(config)
                         if 'TEST_SPECIFIC_THRESHOLDS' not in new_config:
-                            new_config['TEST_SPECIFIC_THRESHOLDS'] = DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'].copy()
+                            new_config['TEST_SPECIFIC_THRESHOLDS'] = copy.deepcopy(DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'])
                         new_config['TEST_SPECIFIC_THRESHOLDS']['TRISOMY'] = {
                             1: {'low': t1_low, 'ambiguous': t1_amb},
                             2: {'low': t2_low, 'medium': t2_med, 'high': t2_high, 'positive': t2_pos},
@@ -5734,9 +5735,9 @@ def main():
                             value=float(test_thresholds['RAT'][3]['positive']), key="r3_pos")
 
                     if st.form_submit_button("💾 Save RAT Thresholds"):
-                        new_config = config.copy()
+                        new_config = copy.deepcopy(config)
                         if 'TEST_SPECIFIC_THRESHOLDS' not in new_config:
-                            new_config['TEST_SPECIFIC_THRESHOLDS'] = DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'].copy()
+                            new_config['TEST_SPECIFIC_THRESHOLDS'] = copy.deepcopy(DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'])
                         new_config['TEST_SPECIFIC_THRESHOLDS']['RAT'] = {
                             1: {'low': r1_low, 'positive': r1_pos},
                             2: {'low': r2_low, 'positive': r2_pos},
@@ -5776,9 +5777,9 @@ def main():
                             value=float(test_thresholds['SCA'][3]['xy_threshold']), key="s3_xy")
 
                     if st.form_submit_button("💾 Save SCA Thresholds"):
-                        new_config = config.copy()
+                        new_config = copy.deepcopy(config)
                         if 'TEST_SPECIFIC_THRESHOLDS' not in new_config:
-                            new_config['TEST_SPECIFIC_THRESHOLDS'] = DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'].copy()
+                            new_config['TEST_SPECIFIC_THRESHOLDS'] = copy.deepcopy(DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'])
                         new_config['TEST_SPECIFIC_THRESHOLDS']['SCA'] = {
                             1: {'xx_threshold': s1_xx, 'xy_threshold': s1_xy},
                             2: {'xx_threshold': s2_xx, 'xy_threshold': s2_xy},
@@ -5829,9 +5830,9 @@ def main():
                         value=float(test_thresholds['CNV'][3]['<= 3.5']), key="c3_le")
 
                     if st.form_submit_button("💾 Save CNV Thresholds"):
-                        new_config = config.copy()
+                        new_config = copy.deepcopy(config)
                         if 'TEST_SPECIFIC_THRESHOLDS' not in new_config:
-                            new_config['TEST_SPECIFIC_THRESHOLDS'] = DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'].copy()
+                            new_config['TEST_SPECIFIC_THRESHOLDS'] = copy.deepcopy(DEFAULT_CONFIG['TEST_SPECIFIC_THRESHOLDS'])
                         new_config['TEST_SPECIFIC_THRESHOLDS']['CNV'] = {
                             1: {'>= 10': c1_10, '> 7': c1_7, '> 3.5': c1_35, '<= 3.5': c1_le},
                             2: {'>= 10': c2_10, '> 7': c2_7, '> 3.5': c2_35, '<= 3.5': c2_le},
@@ -5863,7 +5864,7 @@ def main():
 
         if language_options[selected_lang_display] != current_lang:
             if st.button("Save Language Preference"):
-                new_config = config.copy()
+                new_config = copy.deepcopy(config)
                 new_config['REPORT_LANGUAGE'] = language_options[selected_lang_display]
                 if save_config(new_config):
                     st.success(f"✅ Report language set to {selected_lang_display}")
@@ -5893,7 +5894,7 @@ def main():
 
         if allow_alphanum != allow_alphanum_current:
             if st.button("💾 Save MRN Validation Setting"):
-                new_config = config.copy()
+                new_config = copy.deepcopy(config)
                 new_config['ALLOW_ALPHANUMERIC_MRN'] = allow_alphanum
                 if save_config(new_config):
                     mode_text = "alphanumeric" if allow_alphanum else "numerical only"
@@ -5924,7 +5925,7 @@ def main():
 
         if default_sort != default_sort_current:
             if st.button("💾 Save Sort Order Setting"):
-                new_config = config.copy()
+                new_config = copy.deepcopy(config)
                 new_config['DEFAULT_SORT'] = default_sort
                 if save_config(new_config):
                     sort_text = "ID (Chronological)" if default_sort == 'id' else "MRN"

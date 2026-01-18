@@ -3,6 +3,7 @@ Configuration management and translations for NRIS.
 """
 
 import json
+import copy
 from typing import Dict
 from pathlib import Path
 
@@ -284,7 +285,7 @@ def load_config() -> Dict:
         with open(CONFIG_FILE, 'r') as f:
             return json.load(f)
     except Exception:
-        return DEFAULT_CONFIG.copy()
+        return copy.deepcopy(DEFAULT_CONFIG)
 
 
 def save_config(config: Dict) -> bool:
