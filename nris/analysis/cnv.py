@@ -45,7 +45,7 @@ def analyze_cnv(size: float, ratio: float, test_number: int = 1, config: Optiona
     # Second and third test logic (based on GeneMind documentation)
     else:
         test_label = "2nd test" if test_number == 2 else "3rd test"
-        if ratio < threshold:
-            return f"High Risk (Ratio:{ratio:.1f}%) -> Resample for verification", threshold, "HIGH"
-        else:
+        if ratio >= threshold:
             return f"POSITIVE (Ratio:{ratio:.1f}%, {test_label})", threshold, "POSITIVE"
+        else:
+            return f"High Risk (Ratio:{ratio:.1f}%) -> Resample for verification", threshold, "HIGH"
